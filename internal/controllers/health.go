@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
+	"github.com/Harshmaury/Nexus/pkg/runtime"
 )
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ type HealthController struct {
 	store     *state.Store
 	bus       *eventbus.Bus
 	events    *state.EventWriter
-	providers map[state.ProviderType]daemon.Provider
+	providers runtime.Providers
 	interval  time.Duration
 	timeout   time.Duration
 	results   chan HealthCheckResult
@@ -60,9 +60,9 @@ type HealthController struct {
 type HealthControllerConfig struct {
 	Store     *state.Store
 	Bus       *eventbus.Bus
-	Providers map[state.ProviderType]daemon.Provider
-	Interval  time.Duration // defaults to 10s if zero
-	Timeout   time.Duration // per-check timeout, defaults to 5s if zero
+	Providers runtime.Providers
+	Interval  time.Duration
+	Timeout   time.Duration
 }
 
 // NewHealthController creates a HealthController with required dependencies.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
+	"github.com/Harshmaury/Nexus/pkg/runtime"
 )
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -68,25 +69,6 @@ func (r *ReconcileResult) Summary() string {
 	)
 }
 
-// ── PROVIDER INTERFACE ───────────────────────────────────────────────────────
-
-// Provider is the runtime interface every backend must implement.
-// Docker, K8s, and Process providers all satisfy this interface.
-// The reconciler only ever calls these four methods.
-type Provider interface {
-	// Start launches the service and returns when it is running.
-	Start(ctx context.Context, svc *state.Service) error
-
-	// Stop gracefully shuts down the service.
-	Stop(ctx context.Context, svc *state.Service) error
-
-	// IsRunning checks whether the service is currently running.
-	IsRunning(ctx context.Context, svc *state.Service) (bool, error)
-
-	// Name returns the provider identifier for logging.
-	Name() string
-}
-
 // ── ENGINE ───────────────────────────────────────────────────────────────────
 
 // Engine is the Nexus reconciler.
@@ -96,17 +78,17 @@ type Engine struct {
 	store     *state.Store
 	bus       *eventbus.Bus
 	events    *state.EventWriter
-	providers map[state.ProviderType]Provider
+	providers runtime.Providers
 	interval  time.Duration
-	results   chan ReconcileResult // last N results for introspection
+	results   chan ReconcileResult
 }
 
 // EngineConfig holds all dependencies for the Engine.
 type EngineConfig struct {
 	Store     *state.Store
 	Bus       *eventbus.Bus
-	Providers map[state.ProviderType]Provider
-	Interval  time.Duration // defaults to 5s if zero
+	Providers runtime.Providers
+	Interval  time.Duration
 }
 
 // NewEngine creates a new reconciler Engine.
@@ -357,7 +339,7 @@ func (e *Engine) stopService(ctx context.Context, svc *state.Service, traceID st
 
 // getProvider returns the provider for a given type.
 // This is the only place provider type is resolved — no switch statements elsewhere.
-func (e *Engine) getProvider(providerType state.ProviderType) (Provider, error) {
+func (e *Engine) getProvider(providerType state.ProviderType) (runtime.Provider, error) {
 	provider, exists := e.providers[providerType]
 	if !exists {
 		return nil, fmt.Errorf("no provider registered for type %q", providerType)
