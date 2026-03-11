@@ -183,11 +183,21 @@ func (h *HealthController) checkService(ctx context.Context, svc *state.Service)
 		}
 	}
 
+	// Not running — interpret based on desired state.
+	// If desired = running, the service should be up → crashed.
+	// If desired = stopped, not running is correct → stopped (not a crash).
+	notRunningStatus := state.StateCrashed
+	notRunningMessage := "provider reports service not running"
+	if svc.DesiredState != state.StateRunning {
+		notRunningStatus = state.StateStopped
+		notRunningMessage = "service is stopped as desired"
+	}
+
 	return HealthCheckResult{
 		ServiceID: svc.ID,
-		Status:    state.StateCrashed,
+		Status:    notRunningStatus,
 		ExitCode:  1,
-		Message:   "provider reports service not running",
+		Message:   notRunningMessage,
 		CheckedAt: start,
 		Duration:  duration,
 	}
