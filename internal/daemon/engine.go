@@ -137,6 +137,11 @@ func (e *Engine) Results() <-chan ReconcileResult {
 	return e.results
 }
 
+// Interval returns the configured reconcile interval.
+func (e *Engine) Interval() time.Duration {
+	return e.interval
+}
+
 // ── RECONCILE CYCLE ──────────────────────────────────────────────────────────
 
 // reconcile runs one full reconcile cycle across all services.

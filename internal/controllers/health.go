@@ -114,6 +114,11 @@ func (h *HealthController) Results() <-chan HealthCheckResult {
 	return h.results
 }
 
+// Interval returns the configured health poll interval.
+func (h *HealthController) Interval() time.Duration {
+	return h.interval
+}
+
 // ── POLL ALL ─────────────────────────────────────────────────────────────────
 
 // pollAll checks every service that has desired_state = running.
