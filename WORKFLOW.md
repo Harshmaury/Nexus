@@ -1,6 +1,6 @@
 # NEXUS MASTER WORKFLOW
 # @version: 1.0.0
-# @updated: 2026-03-11
+# @updated: 2026-03-12
 # @author: Harsh Maury
 # @repo: https://github.com/Harshmaury/Nexus
 #
@@ -66,7 +66,7 @@ language: Go 1.24
 type:     platform-daemon
 purpose:  Controls ALL other projects. Never coupled to them.
 github:   https://github.com/Harshmaury/Nexus
-status:   IN DEVELOPMENT — Phase 1 (state store done)
+status:   IN DEVELOPMENT — Phase 1 complete, Phase 2 complete, refactor done
 start:    go run ./cmd/engxd/
 build:    go build -o ~/bin/engxd ./cmd/engxd/
 test:     go test ./...
@@ -99,29 +99,45 @@ warning:  Do not stop without saving state
 # UPDATE THIS SECTION: after completing each phase component
 
 Phase 1 — Daemon Core:
-  [x] 01 internal/state/db.go          → SQLite state store ✅ DONE
-  [ ] 02 internal/eventbus/bus.go       → Event pub/sub
-  [ ] 03 pkg/runtime/interface.go       → Provider interface
-  [ ] 03 pkg/runtime/docker.go          → Docker provider
-  [ ] 03 pkg/runtime/k8s.go             → K8s provider
-  [ ] 04 internal/daemon/engine.go      → Reconciler loop
-  [ ] 05 internal/controllers/health.go → Health controller
-  [ ] 06 internal/controllers/recovery.go → Recovery + back-off
-  [ ] 07 internal/daemon/server.go      → Unix socket server
-  [ ] 08 cmd/engxd/main.go              → Daemon entry point
-  [ ] 08 cmd/engx/main.go               → CLI entry point
+  [x] 01 internal/state/db.go              → SQLite state store ✅ DONE
+  [x] 02 internal/eventbus/bus.go          → Event pub/sub ✅ DONE
+  [x] 03 pkg/runtime/provider.go           → Provider interface ✅ DONE
+  [ ] 03 pkg/runtime/docker/provider.go    → Docker provider (NEXT)
+  [ ] 03 pkg/runtime/k8s/provider.go       → K8s provider
+  [ ] 03 pkg/runtime/process/provider.go   → Process provider
+  [x] 04 internal/daemon/engine.go         → Reconciler loop ✅ DONE
+  [x] 05 internal/controllers/health.go    → Health controller ✅ DONE
+  [x] 06 internal/controllers/recovery.go  → Recovery + back-off ✅ DONE
+  [x] 07 internal/daemon/server.go         → Unix socket server ✅ DONE
+  [x] 08 cmd/engxd/main.go                 → Daemon entry point ✅ DONE
+  [x] 08 cmd/engx/main.go                  → CLI entry point ✅ DONE
+
+Phase 1 — Refactor (complete 2026-03-12):
+  [x] internal/config/policy.go            → Single source for all policy constants ✅
+  [x] internal/config/env.go               → Centralised env helpers, expandHome ✅
+  [x] cmd/engxd/main.go                    → sync.WaitGroup shutdown, log/slog ✅
+  [x] internal/controllers/recovery.go     → context.Context Run() signature ✅
+  [x] internal/controllers/project_controller.go → imports config, no local constants ✅
+  [x] internal/daemon/engine.go            → imports config, slog, logged errors ✅
+  [x] cmd/engx/main.go                     → imports config, no local duplicates ✅
 
 Phase 2 — Drop Intelligence:
-  [ ] internal/watcher/watcher.go       → inotify file watcher
-  [ ] internal/intelligence/detector.go → 3-layer detection
-  [ ] internal/intelligence/renamer.go  → Smart rename
-  [ ] internal/intelligence/router.go   → Confidence router
-  [ ] internal/intelligence/logger.go   → Download audit log
+  [x] internal/watcher/watcher.go          → inotify file watcher ✅ DONE
+  [x] internal/intelligence/detector.go    → 4-layer detection ✅ DONE
+  [x] internal/intelligence/renamer.go     → Smart rename ✅ DONE
+  [x] internal/intelligence/router.go      → Confidence router ✅ DONE
+  [x] internal/intelligence/logger.go      → Download audit log ✅ DONE
+  [x] internal/intelligence/pipeline.go    → Full pipeline coordinator ✅ DONE
 
 Phase 3 — CLI Commands:
   [ ] engx start / stop / status / logs / deploy / doctor
 
-Phase 4 — Plugin System:
+Phase 4 — Providers:
+  [ ] pkg/runtime/docker/provider.go       → Docker SDK implementation
+  [ ] pkg/runtime/k8s/provider.go          → client-go implementation
+  [ ] pkg/runtime/process/provider.go      → os/exec implementation
+
+Phase 5 — Plugin System:
   [ ] plugins/docker/
   [ ] plugins/kubernetes/
   [ ] plugins/health/
@@ -160,11 +176,18 @@ ARCHITECTURE RULES:
   - Projects register with Nexus via .nexus.yaml manifest
   - Clean Architecture: Domain → Application → Infrastructure
   - Every component communicates via the Event Bus only
+  - All policy constants live in internal/config — never redeclare locally
 
 SECURITY:
   - Never log secrets or env values
   - Parameterized queries only
   - Validate all inputs at boundaries
+
+DROP WORKFLOW:
+  - AI produces files as nexus__[feature]__[YYYYMMDD_HHMM].go
+  - Harsh downloads to C:\Users\harsh\Downloads\nexus-drop\
+  - Harsh runs cp commands to place files + go build ./... to verify
+  - On success: git add . && git commit && git push
 
 ---
 
@@ -246,3 +269,7 @@ Steps (3 minutes):
 2026-03-11 | [STRUCTURE] | Cleaned home root, organized ~/dev/
 2026-03-11 | [PROJECTS]  | Registered nexus, ums, ai
 2026-03-11 | [BUILD]     | Phase 1 started — state store complete
+2026-03-11 | [BUILD]     | Phase 1 complete — all daemon core components done
+2026-03-11 | [BUILD]     | Phase 2 complete — Drop Intelligence pipeline done
+2026-03-12 | [BUILD]     | Refactor complete — config package, WaitGroup shutdown, slog, dedup
+2026-03-12 | [AI_RULES]  | Added DROP WORKFLOW section documenting the drop file process
