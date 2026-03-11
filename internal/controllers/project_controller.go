@@ -3,21 +3,19 @@
 // Package controllers contains domain controllers that operate on the state store.
 // ProjectController manages entire projects as a unit —
 // start, stop, and status for all services in a project at once.
+//
+// Changes from previous version:
+//   - Removed local maxRecentFailuresThreshold and failureWindowMinutes constants
+//   - Now imports from internal/config — single source of truth for all policy
 package controllers
 
 import (
 	"fmt"
 	"time"
 
+	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
-)
-
-// ── CONSTANTS ────────────────────────────────────────────────────────────────
-
-const (
-	maxRecentFailuresThreshold = 3
-	failureWindowMinutes       = 60
 )
 
 // ── MODELS ───────────────────────────────────────────────────────────────────
@@ -89,21 +87,18 @@ func (c *ProjectController) StartProject(projectID string) (int, error) {
 		if svc.DesiredState == state.StateRunning {
 			continue
 		}
-
 		if err := c.store.SetDesiredState(svc.ID, state.StateRunning); err != nil {
 			return started, fmt.Errorf("set desired state for %s: %w", svc.ID, err)
 		}
-
 		c.bus.Publish(eventbus.TopicStateChanged, svc.ID, eventbus.StateChangedPayload{
 			ServiceID: svc.ID,
 			From:      string(svc.DesiredState),
 			To:        string(state.StateRunning),
 		})
-
-		if err := c.events.StateChanged(svc.ID, traceID, string(svc.DesiredState), string(state.StateRunning)); err != nil {
+		if err := c.events.StateChanged(svc.ID, traceID,
+			string(svc.DesiredState), string(state.StateRunning)); err != nil {
 			return started, fmt.Errorf("write state changed event for %s: %w", svc.ID, err)
 		}
-
 		started++
 	}
 
@@ -135,21 +130,18 @@ func (c *ProjectController) StopProject(projectID string) (int, error) {
 		if svc.DesiredState == state.StateStopped {
 			continue
 		}
-
 		if err := c.store.SetDesiredState(svc.ID, state.StateStopped); err != nil {
 			return stopped, fmt.Errorf("set desired state for %s: %w", svc.ID, err)
 		}
-
 		c.bus.Publish(eventbus.TopicStateChanged, svc.ID, eventbus.StateChangedPayload{
 			ServiceID: svc.ID,
 			From:      string(svc.DesiredState),
 			To:        string(state.StateStopped),
 		})
-
-		if err := c.events.StateChanged(svc.ID, traceID, string(svc.DesiredState), string(state.StateStopped)); err != nil {
+		if err := c.events.StateChanged(svc.ID, traceID,
+			string(svc.DesiredState), string(state.StateStopped)); err != nil {
 			return stopped, fmt.Errorf("write state changed event for %s: %w", svc.ID, err)
 		}
-
 		stopped++
 	}
 
@@ -159,6 +151,7 @@ func (c *ProjectController) StopProject(projectID string) (int, error) {
 // ── STATUS ───────────────────────────────────────────────────────────────────
 
 // GetProjectStatus returns the full health snapshot of a project.
+// Uses config.MaintenanceFailureThreshold from the central policy config.
 func (c *ProjectController) GetProjectStatus(projectID string) (*ProjectStatus, error) {
 	project, err := c.store.GetProject(projectID)
 	if err != nil {
@@ -181,14 +174,14 @@ func (c *ProjectController) GetProjectStatus(projectID string) (*ProjectStatus, 
 	}
 
 	for _, svc := range services {
-		recentFails, err := c.store.GetRecentFailures(svc.ID, failureWindowMinutes)
+		recentFails, err := c.store.GetRecentFailures(svc.ID, config.MaintenanceWindowMinutes)
 		if err != nil {
 			return nil, fmt.Errorf("get recent failures for %s: %w", svc.ID, err)
 		}
 
 		isHealthy := svc.ActualState == state.StateRunning &&
 			svc.DesiredState == state.StateRunning &&
-			recentFails < maxRecentFailuresThreshold
+			recentFails < config.MaintenanceFailureThreshold
 
 		status.Services = append(status.Services, &ServiceStatus{
 			ID:           svc.ID,

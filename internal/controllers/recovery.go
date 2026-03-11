@@ -4,40 +4,23 @@
 // and decides whether to attempt a restart or escalate to maintenance mode.
 // This is where all restart policy lives — the reconciler and health controller
 // are policy-free. Only RecoveryController makes recovery decisions.
+//
+// Changes from previous version:
+//   - Run() now accepts context.Context (consistent with Engine and HealthController)
+//   - Back-off schedule and thresholds imported from internal/config (single source)
+//   - Duplicate local constants removed
 package controllers
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
 )
-
-// ── CONSTANTS ────────────────────────────────────────────────────────────────
-
-const (
-	// A service that crashes this many times within failureWindowMinutes
-	// is moved to maintenance mode instead of being restarted again.
-	maintenanceFailureThreshold = 3
-	maintenanceWindowMinutes    = 60
-
-	// Back-off delays between restart attempts.
-	// Attempt 1 → 5s, Attempt 2 → 15s, Attempt 3 → 30s, then maintenance.
-	backOffAttempt1 = 5 * time.Second
-	backOffAttempt2 = 15 * time.Second
-	backOffAttempt3 = 30 * time.Second
-)
-
-// backOffSchedule maps fail count to the delay before the next restart attempt.
-// FailCount 0 = first failure, get immediate short delay.
-// Beyond the schedule = maintenance.
-var backOffSchedule = []time.Duration{
-	backOffAttempt1,
-	backOffAttempt2,
-	backOffAttempt3,
-}
 
 // ── RECOVERY DECISION ────────────────────────────────────────────────────────
 
@@ -48,14 +31,14 @@ const (
 	RecoveryActionRestart     RecoveryAction = "restart"
 	RecoveryActionBackOff     RecoveryAction = "back-off"
 	RecoveryActionMaintenance RecoveryAction = "maintenance"
-	RecoveryActionSkip        RecoveryAction = "skip" // already in maintenance
+	RecoveryActionSkip        RecoveryAction = "skip"
 )
 
 // RecoveryDecision is the full structured decision for one service.
 type RecoveryDecision struct {
 	ServiceID    string
 	Action       RecoveryAction
-	BackOffDelay time.Duration  // non-zero when action = back-off
+	BackOffDelay time.Duration // non-zero when action = back-off
 	Reason       string
 	DecidedAt    time.Time
 }
@@ -63,23 +46,16 @@ type RecoveryDecision struct {
 // ── RECOVERY CONTROLLER ──────────────────────────────────────────────────────
 
 // RecoveryController subscribes to crash events and enforces restart policy.
-// It sets desired_state back to running after a back-off delay,
-// or moves the service to maintenance if the threshold is exceeded.
-//
-// Policy owned here (moved from reconciler TODO):
-//   - Back-off schedule per fail count
-//   - Maintenance threshold: 3 failures in 60 minutes
+// Policy is sourced entirely from internal/config — no magic numbers here.
 type RecoveryController struct {
 	store     *state.Store
 	bus       *eventbus.Bus
 	events    *state.EventWriter
-	subID     string // bus subscription ID for cleanup
+	subID     string
 	decisions chan RecoveryDecision
 
-	// pending tracks services waiting for back-off delay.
-	// key = serviceID, value = time when restart is allowed.
 	mu      sync.Mutex
-	pending map[string]time.Time
+	pending map[string]time.Time // serviceID → time when restart is allowed
 }
 
 // NewRecoveryController creates a RecoveryController and subscribes to the bus.
@@ -91,8 +67,6 @@ func NewRecoveryController(store *state.Store, bus *eventbus.Bus) *RecoveryContr
 		decisions: make(chan RecoveryDecision, 20),
 		pending:   make(map[string]time.Time),
 	}
-
-	// Subscribe to recovery needed events from the health controller.
 	rc.subID = bus.Subscribe(eventbus.TopicRecoveryNeeded, rc.onRecoveryNeeded)
 	return rc
 }
@@ -100,17 +74,16 @@ func NewRecoveryController(store *state.Store, bus *eventbus.Bus) *RecoveryContr
 // ── RUN ──────────────────────────────────────────────────────────────────────
 
 // Run processes recovery decisions and blocks until ctx is cancelled.
-// Call in a goroutine from the daemon entry point.
-// It also runs a ticker to process pending back-off restarts.
-func (rc *RecoveryController) Run(ctx <-chan struct{}) {
+// Now accepts context.Context — consistent with Engine.Run and HealthController.Run.
+func (rc *RecoveryController) Run(ctx context.Context) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	defer rc.bus.Unsubscribe(rc.subID)
 
 	for {
 		select {
-		case <-ctx:
-			return
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-ticker.C:
 			rc.processPending()
 		}
@@ -124,8 +97,6 @@ func (rc *RecoveryController) Decisions() <-chan RecoveryDecision {
 
 // ── EVENT HANDLER ────────────────────────────────────────────────────────────
 
-// onRecoveryNeeded is called by the event bus when a service crashes.
-// It evaluates policy and schedules the appropriate action.
 func (rc *RecoveryController) onRecoveryNeeded(event eventbus.Event) error {
 	payload, ok := event.Payload.(eventbus.RecoveryPayload)
 	if !ok {
@@ -143,20 +114,15 @@ func (rc *RecoveryController) onRecoveryNeeded(event eventbus.Event) error {
 	decision := rc.decide(svc)
 	rc.execute(svc, decision)
 	rc.publishDecision(decision)
-
 	return nil
 }
 
 // ── POLICY ───────────────────────────────────────────────────────────────────
 
-// decide applies recovery policy and returns the appropriate action.
-// This is the single place where restart policy is expressed.
+// decide applies recovery policy. All thresholds come from internal/config.
 func (rc *RecoveryController) decide(svc *state.Service) RecoveryDecision {
 	now := time.Now().UTC()
-	tracePrefix := fmt.Sprintf("recovery-%s", svc.ID)
-	_ = tracePrefix // used in execute
 
-	// Already in maintenance — nothing to do.
 	if svc.ActualState == state.StateMaintenance {
 		return RecoveryDecision{
 			ServiceID: svc.ID,
@@ -166,35 +132,31 @@ func (rc *RecoveryController) decide(svc *state.Service) RecoveryDecision {
 		}
 	}
 
-	// Check recent failure count from health logs.
-	recentFailures, err := rc.store.GetRecentFailures(svc.ID, maintenanceWindowMinutes)
+	recentFailures, err := rc.store.GetRecentFailures(svc.ID, config.MaintenanceWindowMinutes)
 	if err != nil {
-		// Cannot determine failure count — safe default is back-off.
 		return RecoveryDecision{
 			ServiceID:    svc.ID,
 			Action:       RecoveryActionBackOff,
-			BackOffDelay: backOffAttempt1,
+			BackOffDelay: config.BackOffSchedule[0],
 			Reason:       fmt.Sprintf("cannot read failure count: %v — defaulting to back-off", err),
 			DecidedAt:    now,
 		}
 	}
 
-	// Too many failures — escalate to maintenance.
-	if recentFailures >= maintenanceFailureThreshold {
+	if recentFailures >= config.MaintenanceFailureThreshold {
 		return RecoveryDecision{
 			ServiceID: svc.ID,
 			Action:    RecoveryActionMaintenance,
 			Reason: fmt.Sprintf(
 				"%d failures in %d minutes exceeds threshold of %d",
-				recentFailures, maintenanceWindowMinutes, maintenanceFailureThreshold,
+				recentFailures, config.MaintenanceWindowMinutes, config.MaintenanceFailureThreshold,
 			),
 			DecidedAt: now,
 		}
 	}
 
-	// Apply back-off schedule based on total fail count.
-	if svc.FailCount < len(backOffSchedule) {
-		delay := backOffSchedule[svc.FailCount]
+	if svc.FailCount < len(config.BackOffSchedule) {
+		delay := config.BackOffSchedule[svc.FailCount]
 		return RecoveryDecision{
 			ServiceID:    svc.ID,
 			Action:       RecoveryActionBackOff,
@@ -204,7 +166,6 @@ func (rc *RecoveryController) decide(svc *state.Service) RecoveryDecision {
 		}
 	}
 
-	// Fail count beyond schedule — maintenance.
 	return RecoveryDecision{
 		ServiceID: svc.ID,
 		Action:    RecoveryActionMaintenance,
@@ -215,36 +176,28 @@ func (rc *RecoveryController) decide(svc *state.Service) RecoveryDecision {
 
 // ── EXECUTE ──────────────────────────────────────────────────────────────────
 
-// execute acts on a recovery decision.
 func (rc *RecoveryController) execute(svc *state.Service, decision RecoveryDecision) {
 	traceID := fmt.Sprintf("recovery-%s-%d", svc.ID, decision.DecidedAt.UnixNano())
 
 	switch decision.Action {
-
 	case RecoveryActionSkip:
-		// Nothing to do.
+		// nothing to do
 
 	case RecoveryActionBackOff:
-		// Schedule a restart after the back-off delay.
-		// The reconciler will pick it up once desired_state is set back to running.
 		restartAt := decision.DecidedAt.Add(decision.BackOffDelay)
 		rc.mu.Lock()
 		rc.pending[svc.ID] = restartAt
 		rc.mu.Unlock()
 
-		_ = rc.events.StateChanged(
-			svc.ID, traceID,
-			string(svc.ActualState),
-			string(state.StateRecovering),
-		)
+		_ = rc.events.StateChanged(svc.ID, traceID,
+			string(svc.ActualState), string(state.StateRecovering))
 		_ = rc.store.SetActualState(svc.ID, state.StateRecovering)
 
 	case RecoveryActionMaintenance:
 		_ = rc.store.SetActualState(svc.ID, state.StateMaintenance)
 		_ = rc.store.SetDesiredState(svc.ID, state.StateStopped)
 
-		_ = rc.events.SystemAlert(
-			"critical",
+		_ = rc.events.SystemAlert("critical",
 			fmt.Sprintf("service %s moved to maintenance: %s", svc.ID, decision.Reason),
 			map[string]string{
 				"service_id": svc.ID,
@@ -252,34 +205,25 @@ func (rc *RecoveryController) execute(svc *state.Service, decision RecoveryDecis
 				"fail_count": fmt.Sprintf("%d", svc.FailCount),
 			},
 		)
-
 		rc.bus.Publish(eventbus.TopicSystemAlert, svc.ID, eventbus.AlertPayload{
 			Severity: "critical",
 			Message:  fmt.Sprintf("%s → maintenance: %s", svc.ID, decision.Reason),
-			Context: map[string]string{
-				"service_id": svc.ID,
-				"fail_count": fmt.Sprintf("%d", svc.FailCount),
-			},
+			Context:  map[string]string{"service_id": svc.ID},
 		})
 	}
 }
 
 // ── PENDING RESTARTS ─────────────────────────────────────────────────────────
 
-// processPending checks if any back-off delays have elapsed
-// and sets desired_state = running so the reconciler picks them up.
 func (rc *RecoveryController) processPending() {
 	now := time.Now().UTC()
-
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 
 	for serviceID, restartAt := range rc.pending {
 		if now.Before(restartAt) {
-			continue // still waiting
+			continue
 		}
-
-		// Back-off elapsed — allow reconciler to restart.
 		if err := rc.store.SetDesiredState(serviceID, state.StateRunning); err != nil {
 			_ = rc.events.SystemAlert("warn",
 				fmt.Sprintf("recovery: failed to set desired state for %s: %v", serviceID, err),
@@ -287,7 +231,6 @@ func (rc *RecoveryController) processPending() {
 			)
 			continue
 		}
-
 		delete(rc.pending, serviceID)
 	}
 }

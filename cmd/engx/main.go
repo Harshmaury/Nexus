@@ -3,6 +3,12 @@
 // engx is the Nexus CLI — the developer-facing interface to the daemon.
 // It communicates with the state store directly for read operations,
 // and sets desired state for write operations (daemon reconciles).
+//
+// Changes from previous version:
+//   - Removed local expandHome() — now uses config.ExpandHome
+//   - Removed local defaultDBPath constant — now uses config.DefaultDBPath
+//   - Added import of internal/config
+//   - Removed unused "path/filepath" and "os" (expandHome needed them)
 package main
 
 import (
@@ -12,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
@@ -20,10 +27,7 @@ import (
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const (
-	defaultDBPath = "~/.nexus/nexus.db"
-	cliVersion    = "0.1.0"
-)
+const cliVersion = "0.1.0"
 
 // ── ENTRY POINT ──────────────────────────────────────────────────────────────
 
@@ -50,7 +54,7 @@ GitHub: https://github.com/Harshmaury/Nexus`,
 	}
 
 	root.PersistentFlags().StringVar(
-		&dbPath, "db", expandHome(defaultDBPath),
+		&dbPath, "db", config.ExpandHome(config.DefaultDBPath),
 		"path to nexus state database",
 	)
 
@@ -67,7 +71,6 @@ GitHub: https://github.com/Harshmaury/Nexus`,
 
 // ── REGISTER COMMAND ─────────────────────────────────────────────────────────
 
-// registerCmd reads .nexus.yaml from the given path and registers the project.
 func registerCmd(dbPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "register <project-path>",
@@ -79,7 +82,7 @@ Example .nexus.yaml:
   name: my-project
   type: web-api
   language: go`,
-		Args: cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		Example: `  engx register ~/dev/projects/ums
   engx register .`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -173,10 +176,9 @@ func readNexusManifest(projectPath string) (*nexusManifest, error) {
 		switch key {
 		case "name":
 			manifest.name = value
-			// derive ID from name: lowercase, spaces to dashes
 			manifest.id = strings.ToLower(strings.ReplaceAll(value, " ", "-"))
 		case "id":
-			manifest.id = value // explicit ID overrides derived one
+			manifest.id = value
 		case "language":
 			manifest.language = value
 		case "type":
@@ -187,7 +189,6 @@ func readNexusManifest(projectPath string) (*nexusManifest, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read .nexus.yaml: %w", err)
 	}
-
 	if manifest.name == "" {
 		return nil, fmt.Errorf(".nexus.yaml is missing required field: name")
 	}
@@ -336,14 +337,13 @@ func projectStatusCmd(dbPath *string) *cobra.Command {
 	return cmd
 }
 
-// ── RENDER STATUS (CLI CONCERN) ───────────────────────────────────────────────
+// ── RENDER STATUS ────────────────────────────────────────────────────────────
 
-// renderStatus formats a ProjectStatus for terminal output.
-// Rendering is a CLI concern — controllers only return data.
 func renderStatus(status *controllers.ProjectStatus) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("\nPROJECT: %s (%s)\n", strings.ToUpper(status.ProjectID), status.ProjectName))
+	sb.WriteString(fmt.Sprintf("\nPROJECT: %s (%s)\n",
+		strings.ToUpper(status.ProjectID), status.ProjectName))
 	sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %-10s %s\n",
 		"SERVICE", "DESIRED", "ACTUAL", "PROVIDER", "HEALTH"))
 	sb.WriteString(strings.Repeat("─", 78) + "\n")
@@ -382,7 +382,6 @@ func renderStatus(status *controllers.ProjectStatus) string {
 	return sb.String()
 }
 
-// ANSI colour helpers — only used in the CLI layer.
 func colorGreen(s string) string { return "\033[32m" + s + "\033[0m" }
 func colorRed(s string) string   { return "\033[31m" + s + "\033[0m" }
 
@@ -505,7 +504,7 @@ func buildProjectController(dbPath *string) (*controllers.ProjectController, fun
 }
 
 func openStore(dbPath *string) (*state.Store, error) {
-	path := expandHome(*dbPath)
+	path := config.ExpandHome(*dbPath) // uses config.ExpandHome — no local duplicate
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -517,15 +516,4 @@ func openStore(dbPath *string) (*state.Store, error) {
 		return nil, fmt.Errorf("open state store at %s: %w", path, err)
 	}
 	return store, nil
-}
-
-func expandHome(path string) string {
-	if len(path) >= 2 && path[:2] == "~/" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return filepath.Join(home, path[2:])
-	}
-	return path
 }

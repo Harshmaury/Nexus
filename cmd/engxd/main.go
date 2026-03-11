@@ -4,24 +4,32 @@
 // It wires every component together, starts them as goroutines,
 // and shuts down cleanly on SIGINT or SIGTERM.
 //
+// Changes from previous version:
+//   - sync.WaitGroup tracks goroutines — shutdown no longer always burns 10s
+//   - log.Logger replaced with log/slog + JSONHandler (structured, queryable)
+//   - RecoveryController.Run now called with context.Context (not ctx.Done())
+//   - All config defaults imported from internal/config (no local constants)
+//   - expandHome / envOrDefault / durationEnvOrDefault moved to internal/config
+//
 // Component startup order:
 //  1. State store (SQLite)
 //  2. Event bus
 //  3. Controllers (project, health, recovery)
 //  4. Reconciler engine
 //  5. Unix socket server
-//  6. Result logger (reads engine + health channels)
+//  6. Result logger
 package main
 
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
-	"time"
 
+	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
@@ -29,54 +37,68 @@ import (
 	"github.com/Harshmaury/Nexus/pkg/runtime"
 )
 
-// ── CONSTANTS ────────────────────────────────────────────────────────────────
-
-const (
-	daemonVersion    = "0.1.0"
-	defaultDBPath    = "~/.nexus/nexus.db"
-	shutdownTimeout  = 10 * time.Second
-)
+const daemonVersion = "0.1.0"
 
 // ── ENTRY POINT ──────────────────────────────────────────────────────────────
 
 func main() {
-	logger := log.New(os.Stdout, "[engxd] ", log.LstdFlags)
+	logger := setupLogger()
 
-	logger.Printf("Nexus daemon v%s starting", daemonVersion)
+	logger.Info("Nexus daemon starting", "version", daemonVersion)
 
 	if err := run(logger); err != nil {
-		logger.Fatalf("fatal: %v", err)
+		logger.Error("daemon exited with error", "err", err)
+		os.Exit(1)
 	}
 
-	logger.Println("daemon stopped cleanly")
+	logger.Info("daemon stopped cleanly")
+}
+
+// ── LOGGER SETUP ─────────────────────────────────────────────────────────────
+
+// setupLogger builds a structured JSON logger respecting LOG_LEVEL env var.
+// Output is machine-readable and ships directly to Grafana Loki without parsing.
+func setupLogger() *slog.Logger {
+	level := slog.LevelInfo
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		if err := level.UnmarshalText([]byte(v)); err != nil {
+			slog.Warn("invalid LOG_LEVEL, defaulting to info", "value", v)
+		}
+	}
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+	return logger
 }
 
 // ── RUN ──────────────────────────────────────────────────────────────────────
 
-func run(logger *log.Logger) error {
+func run(logger *slog.Logger) error {
 	// ── 1. STATE STORE ───────────────────────────────────────────────────────
-	dbPath := expandHome(envOrDefault("NEXUS_DB_PATH", defaultDBPath))
-	logger.Printf("opening state store: %s", dbPath)
+	dbPath := config.ExpandHome(config.EnvOrDefault("NEXUS_DB_PATH", config.DefaultDBPath))
+	logger.Info("opening state store", "path", dbPath)
 
 	store, err := state.New(dbPath)
 	if err != nil {
 		return fmt.Errorf("open state store: %w", err)
 	}
 	defer func() {
-		logger.Println("closing state store")
+		logger.Info("closing state store")
 		_ = store.Close()
 	}()
 
 	// ── 2. EVENT BUS ─────────────────────────────────────────────────────────
 	bus := eventbus.NewWithErrorHandler(func(topic eventbus.Topic, handlerID string, err error) {
-		logger.Printf("event bus error: topic=%s handler=%s err=%v", topic, handlerID, err)
+		logger.Warn("event bus handler error",
+			"topic", topic,
+			"handler_id", handlerID,
+			"err", err,
+		)
 	})
 
 	// ── 3. PROVIDERS ─────────────────────────────────────────────────────────
-	// Providers are registered here. Add Docker/K8s/Process as they are built.
-	// For now the map is empty — services with no provider are skipped by the reconciler.
 	providers := runtime.Providers{}
-	logger.Printf("registered %d providers", len(providers))
+	logger.Info("providers registered", "count", len(providers))
 
 	// ── 4. CONTROLLERS ───────────────────────────────────────────────────────
 	projectCtrl := controllers.NewProjectController(store, bus)
@@ -85,8 +107,8 @@ func run(logger *log.Logger) error {
 		Store:     store,
 		Bus:       bus,
 		Providers: providers,
-		Interval:  durationEnvOrDefault("NEXUS_HEALTH_INTERVAL", 10*time.Second),
-		Timeout:   durationEnvOrDefault("NEXUS_HEALTH_TIMEOUT", 5*time.Second),
+		Interval:  config.DurationEnvOrDefault("NEXUS_HEALTH_INTERVAL", config.DefaultHealthInterval),
+		Timeout:   config.DurationEnvOrDefault("NEXUS_HEALTH_TIMEOUT", config.DefaultHealthTimeout),
 	})
 
 	recoveryCtrl := controllers.NewRecoveryController(store, bus)
@@ -96,11 +118,12 @@ func run(logger *log.Logger) error {
 		Store:     store,
 		Bus:       bus,
 		Providers: providers,
-		Interval:  durationEnvOrDefault("NEXUS_RECONCILE_INTERVAL", 5*time.Second),
+		Interval:  config.DurationEnvOrDefault("NEXUS_RECONCILE_INTERVAL", config.DefaultReconcileInterval),
+		Logger:    logger,
 	})
 
 	// ── 6. UNIX SOCKET SERVER ────────────────────────────────────────────────
-	socketPath := envOrDefault("NEXUS_SOCKET", daemon.DefaultSocketPath)
+	socketPath := config.EnvOrDefault("NEXUS_SOCKET", daemon.DefaultSocketPath)
 	server := daemon.NewServer(daemon.ServerConfig{
 		SocketPath:  socketPath,
 		Store:       store,
@@ -115,75 +138,93 @@ func run(logger *log.Logger) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// ── START ALL GOROUTINES ─────────────────────────────────────────────────
+	// ── START GOROUTINES ─────────────────────────────────────────────────────
+	// WaitGroup tracks all goroutines so shutdown waits for actual completion
+	// instead of always burning the full shutdown timeout.
+	var wg sync.WaitGroup
 	errCh := make(chan error, 5)
-	done := make(chan struct{})
 
-	// Reconciler
-	go func() {
-		logger.Printf("reconciler started (interval=%s)", engine.Interval())
-		if err := engine.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("reconciler: %w", err)
-		}
-	}()
+	startComponent := func(name string, fn func() error) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := fn(); err != nil && ctx.Err() == nil {
+				errCh <- fmt.Errorf("%s: %w", name, err)
+			}
+		}()
+	}
 
-	// Health controller
-	go func() {
-		logger.Printf("health controller started (interval=%s)", healthCtrl.Interval())
-		if err := healthCtrl.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("health controller: %w", err)
-		}
-	}()
+	startComponent("reconciler", func() error {
+		logger.Info("reconciler started", "interval", engine.Interval().String())
+		return engine.Run(ctx)
+	})
 
-	// Recovery controller
-	go func() {
-		logger.Println("recovery controller started")
-		recoveryCtrl.Run(ctx.Done())
-	}()
+	startComponent("health-controller", func() error {
+		logger.Info("health controller started", "interval", healthCtrl.Interval().String())
+		return healthCtrl.Run(ctx)
+	})
 
-	// Unix socket server
-	go func() {
-		logger.Printf("socket server started: %s", socketPath)
-		if err := server.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("socket server: %w", err)
-		}
-	}()
+	startComponent("recovery-controller", func() error {
+		logger.Info("recovery controller started")
+		return recoveryCtrl.Run(ctx) // context.Context — fixed from ctx.Done()
+	})
 
-	// Result logger — reads reconciler and health channels and logs them.
+	startComponent("socket-server", func() error {
+		logger.Info("socket server started", "socket", socketPath)
+		return server.Run(ctx)
+	})
+
+	// Result logger reads all result channels — no WaitGroup needed (ctx-driven).
 	go logResults(ctx, logger, engine, healthCtrl, recoveryCtrl)
 
-	logger.Printf("✓ Nexus daemon ready — socket=%s db=%s", socketPath, dbPath)
+	logger.Info("Nexus daemon ready",
+		"socket", socketPath,
+		"db", dbPath,
+		"version", daemonVersion,
+	)
 
-	// ── WAIT FOR SHUTDOWN ────────────────────────────────────────────────────
+	// ── WAIT FOR SHUTDOWN TRIGGER ────────────────────────────────────────────
+	select {
+	case sig := <-sigCh:
+		logger.Info("shutdown signal received", "signal", sig.String())
+	case err := <-errCh:
+		logger.Error("component error — initiating shutdown", "err", err)
+	}
+
+	cancel() // signal all components to stop
+
+	// ── WAIT FOR COMPONENTS TO FINISH ────────────────────────────────────────
+	// Use a channel to detect actual completion vs forced timeout.
+	// Previously: always waited the full 10s. Now: exits as soon as all
+	// goroutines return, with 10s as a hard safety ceiling.
+	stopped := make(chan struct{})
 	go func() {
-		select {
-		case sig := <-sigCh:
-			logger.Printf("received signal %s — shutting down", sig)
-		case err := <-errCh:
-			logger.Printf("component error — shutting down: %v", err)
-		}
-		cancel()
-		close(done)
+		wg.Wait()
+		close(stopped)
 	}()
 
-	<-done
-
-	// Give components time to finish in-flight work.
-	logger.Printf("waiting up to %s for components to stop", shutdownTimeout)
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
 	defer shutdownCancel()
 
-	<-shutdownCtx.Done()
+	select {
+	case <-stopped:
+		logger.Info("all components stopped cleanly")
+	case <-shutdownCtx.Done():
+		logger.Warn("shutdown timeout exceeded — forcing exit",
+			"timeout", config.ShutdownTimeout.String(),
+		)
+	}
+
 	return nil
 }
 
 // ── RESULT LOGGER ────────────────────────────────────────────────────────────
 
 // logResults subscribes to result channels and logs significant events.
-// This keeps logging out of the hot paths of each component.
+// Keeps structured logging out of the hot paths of each component.
 func logResults(
 	ctx context.Context,
-	logger *log.Logger,
+	logger *slog.Logger,
 	engine *daemon.Engine,
 	healthCtrl *controllers.HealthController,
 	recoveryCtrl *controllers.RecoveryController,
@@ -197,24 +238,36 @@ func logResults(
 			if !ok {
 				return
 			}
-			// Only log cycles where something happened.
 			if len(result.Started) > 0 || len(result.Stopped) > 0 ||
 				len(result.Maintained) > 0 || result.HasErrors() {
-				logger.Printf("reconcile: %s", result.Summary())
+				logger.Info("reconcile cycle",
+					"cycle_id", result.CycleID,
+					"started", len(result.Started),
+					"stopped", len(result.Stopped),
+					"maintained", len(result.Maintained),
+					"skipped", len(result.Skipped),
+					"errors", len(result.Errors),
+					"duration_ms", result.Duration.Milliseconds(),
+				)
 			}
 			for _, e := range result.Errors {
-				logger.Printf("reconcile error: %s", e.Error())
+				logger.Error("reconcile error",
+					"service_id", e.ServiceID,
+					"action", e.Action,
+					"err", e.Err,
+				)
 			}
 
 		case result, ok := <-healthCtrl.Results():
 			if !ok {
 				return
 			}
-			// Only log unhealthy results — skip noise from healthy services.
 			if !result.IsHealthy() {
-				logger.Printf("health: service=%s status=%s message=%s duration=%s",
-					result.ServiceID, result.Status, result.Message,
-					result.Duration.Round(time.Millisecond),
+				logger.Warn("health check failed",
+					"service_id", result.ServiceID,
+					"status", result.Status,
+					"message", result.Message,
+					"duration_ms", result.Duration.Milliseconds(),
 				)
 			}
 
@@ -222,41 +275,12 @@ func logResults(
 			if !ok {
 				return
 			}
-			logger.Printf("recovery: service=%s action=%s reason=%s",
-				decision.ServiceID, decision.Action, decision.Reason,
+			logger.Info("recovery decision",
+				"service_id", decision.ServiceID,
+				"action", decision.Action,
+				"reason", decision.Reason,
+				"back_off_delay", decision.BackOffDelay.String(),
 			)
 		}
 	}
-}
-
-// ── HELPERS ──────────────────────────────────────────────────────────────────
-
-func envOrDefault(key string, fallback string) string {
-	if val := os.Getenv(key); val != "" {
-		return val
-	}
-	return fallback
-}
-
-func durationEnvOrDefault(key string, fallback time.Duration) time.Duration {
-	val := os.Getenv(key)
-	if val == "" {
-		return fallback
-	}
-	d, err := time.ParseDuration(val)
-	if err != nil {
-		return fallback
-	}
-	return d
-}
-
-func expandHome(path string) string {
-	if len(path) >= 2 && path[:2] == "~/" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return home + "/" + path[2:]
-	}
-	return path
 }
