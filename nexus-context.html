@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nexus Context — Harsh Maury</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
+
+  :root {
+    --bg: #030508;
+    --bg2: #070B14;
+    --bg3: #0C1220;
+    --border: rgba(255,255,255,0.06);
+    --border2: rgba(255,255,255,0.1);
+    --text: #C8D8F0;
+    --muted: #3A5070;
+    --cyan: #00D4FF;
+    --green: #00FFB2;
+    --purple: #7B61FF;
+    --orange: #FFB830;
+    --red: #FF6B6B;
+    --lime: #A8FF78;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.02) 1px, transparent 1px);
+    background-size: 48px 48px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 40px 24px; }
+
+  /* ── HEADER ── */
+  .header { margin-bottom: 48px; }
+  .badge {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; letter-spacing: 4px;
+    color: var(--cyan);
+    background: rgba(0,212,255,0.07);
+    border: 1px solid rgba(0,212,255,0.2);
+    border-radius: 3px; padding: 4px 14px;
+    margin-bottom: 16px;
+  }
+  .header h1 {
+    font-size: clamp(32px, 5vw, 56px);
+    font-weight: 900; line-height: 1.1;
+    letter-spacing: -1px;
+  }
+  .header h1 span.accent { color: var(--cyan); }
+  .header p { color: var(--muted); font-size: 13px; margin-top: 10px; letter-spacing: 1px; font-family: 'JetBrains Mono', monospace; }
+
+  /* ── STATUS BAR ── */
+  .status-bar {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 36px;
+  }
+  .status-pill {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 20px; padding: 6px 14px;
+    font-size: 12px; font-family: 'JetBrains Mono', monospace;
+    cursor: default;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; animation: pulse 2s infinite; }
+  .dot.green { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.cyan { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  .dot.orange { background: var(--orange); box-shadow: 0 0 8px var(--orange); }
+  .dot.red { background: var(--red); }
+
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+
+  /* ── TABS ── */
+  .tabs { display: flex; gap: 2px; margin-bottom: 32px; border-bottom: 1px solid var(--border); }
+  .tab {
+    background: none; border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; letter-spacing: 3px;
+    padding: 10px 20px; cursor: pointer;
+    text-transform: uppercase; transition: all .2s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+
+  /* ── PANELS ── */
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* ── CARDS ── */
+  .card {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px 24px;
+    margin-bottom: 16px;
+    transition: border-color .2s;
+  }
+  .card:hover { border-color: var(--border2); }
+  .card-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: 4px;
+    color: var(--cyan); margin-bottom: 8px;
+  }
+  .card h3 { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+
+  /* ── GRID ── */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  @media(max-width: 700px) { .grid2,.grid3 { grid-template-columns: 1fr; } }
+
+  /* ── STAT BOX ── */
+  .stat-box {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px; padding: 16px;
+    text-align: center;
+  }
+  .stat-val { font-size: 28px; font-weight: 900; font-family: 'JetBrains Mono', monospace; }
+  .stat-lbl { font-size: 10px; color: var(--muted); letter-spacing: 2px; margin-top: 4px; }
+
+  /* ── TABLE ── */
+  .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .tbl th {
+    background: rgba(0,212,255,0.08);
+    color: var(--cyan); font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: 3px;
+    padding: 10px 14px; text-align: left;
+    border-bottom: 1px solid rgba(0,212,255,0.15);
+  }
+  .tbl td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .tbl tr:last-child td { border-bottom: none; }
+  .tbl tr:nth-child(even) td { background: rgba(255,255,255,0.01); }
+
+  /* ── CODE ── */
+  pre, code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; line-height: 1.8;
+  }
+  .code-block {
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--border2);
+    border-radius: 6px; padding: 16px;
+    overflow-x: auto; white-space: pre-wrap;
+    color: #4A7090;
+  }
+  .code-block .comment { color: #2A4060; }
+  .code-block .keyword { color: var(--cyan); }
+  .code-block .string { color: var(--orange); }
+  .code-block .annotation { color: var(--green); }
+
+  /* ── COPY BUTTON ── */
+  .copy-btn {
+    background: rgba(123,97,255,0.12);
+    border: 1px solid rgba(123,97,255,0.3);
+    border-radius: 4px; color: var(--purple);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: 2px;
+    padding: 6px 14px; cursor: pointer;
+    transition: all .2s; float: right;
+  }
+  .copy-btn:hover { background: rgba(123,97,255,0.2); }
+  .copy-btn.copied { color: var(--green); border-color: rgba(0,255,178,0.3); background: rgba(0,255,178,0.08); }
+
+  /* ── TAG ── */
+  .tag {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: 1px;
+    border-radius: 3px; padding: 2px 8px;
+    margin: 2px;
+  }
+
+  /* ── CALLOUT ── */
+  .callout {
+    border-radius: 6px; padding: 14px 18px;
+    margin-bottom: 16px; font-size: 12px; line-height: 1.7;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .callout-title { font-size: 9px; letter-spacing: 3px; margin-bottom: 8px; font-weight: 700; }
+
+  /* ── PROJECT CARD ── */
+  .project-card {
+    border-radius: 8px; padding: 20px;
+    margin-bottom: 12px; cursor: pointer;
+    transition: all .2s;
+  }
+  .project-card:hover { transform: translateY(-1px); }
+
+  /* ── COMMAND ROW ── */
+  .cmd-row {
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    border-radius: 4px; padding: 10px 14px;
+    margin-bottom: 8px; cursor: pointer;
+    transition: border-color .2s;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+  .cmd-row:hover { border-color: var(--border2); }
+  .cmd-row .prompt { color: var(--green); margin-right: 4px; }
+
+  /* ── WORKFLOW STEP ── */
+  .workflow-step {
+    display: flex; gap: 16px; align-items: flex-start;
+    padding: 16px; margin-bottom: 8px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .step-num {
+    width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 700; flex-shrink: 0;
+  }
+
+  /* ── FOOTER ── */
+  .footer {
+    margin-top: 60px; padding-top: 20px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; color: #1A2A40; letter-spacing: 2px;
+  }
+
+  /* ── NOTIFICATION ── */
+  #toast {
+    position: fixed; bottom: 30px; right: 30px;
+    background: rgba(0,255,178,0.1);
+    border: 1px solid rgba(0,255,178,0.3);
+    border-radius: 6px; padding: 12px 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: var(--green);
+    transform: translateY(100px); opacity: 0;
+    transition: all .3s; z-index: 1000;
+  }
+  #toast.show { transform: translateY(0); opacity: 1; }
+
+  /* scroll bar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="badge">NEXUS CONTEXT · HARSH MAURY · WSL2 UBUNTU 24.04</div>
+    <h1>Developer <span class="accent">Control</span> Context</h1>
+    <p>Single source of truth · paste to any AI · zero re-explaining</p>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div class="status-bar" id="statusBar">
+    <div class="status-pill"><div class="dot green"></div><span style="color:#00FFB2">Minikube Running</span></div>
+    <div class="status-pill"><div class="dot cyan"></div><span style="color:#00D4FF">Docker Active</span></div>
+    <div class="status-pill"><div class="dot cyan"></div><span style="color:#00D4FF">Go 1.24.1</span></div>
+    <div class="status-pill"><div class="dot cyan"></div><span style="color:#00D4FF">.NET 10.0</span></div>
+    <div class="status-pill"><div class="dot orange"></div><span style="color:#FFB830">GitHub Runner Active</span></div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('overview')">Overview</button>
+    <button class="tab" onclick="showTab('projects')">Projects</button>
+    <button class="tab" onclick="showTab('workflow')">AI Workflow</button>
+    <button class="tab" onclick="showTab('skillset')">Skillset Prompt</button>
+    <button class="tab" onclick="showTab('commands')">Commands</button>
+    <button class="tab" onclick="showTab('integrate')">New Project</button>
+  </div>
+
+  <!-- ── OVERVIEW TAB ── -->
+  <div id="panel-overview" class="panel active">
+    <div class="grid3">
+      <div class="stat-box"><div class="stat-val" style="color:#00D4FF">3</div><div class="stat-lbl">ACTIVE PROJECTS</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:#00FFB2">9</div><div class="stat-lbl">MICROSERVICES</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:#7B61FF">6</div><div class="stat-lbl">TECH STACKS</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">MACHINE IDENTITY</div>
+      <table class="tbl">
+        <tr><th>Property</th><th>Value</th></tr>
+        <tr><td>Developer</td><td>Harsh Maury</td></tr>
+        <tr><td>OS</td><td>Ubuntu 24.04.4 LTS (WSL2) + Windows 11</td></tr>
+        <tr><td>GitHub</td><td><a href="https://github.com/Harshmaury" style="color:#00D4FF">github.com/Harshmaury</a></td></tr>
+        <tr><td>Workspace Root</td><td><code>~/dev/</code></td></tr>
+        <tr><td>Nexus Engine</td><td><a href="https://github.com/Harshmaury/Nexus" style="color:#00D4FF">github.com/Harshmaury/Nexus</a></td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-label">RUNTIMES & TOOLS</div>
+      <table class="tbl">
+        <tr><th>Tool</th><th>Version</th><th>Location</th><th>Status</th></tr>
+        <tr><td>Go</td><td>1.24.1</td><td>WSL2 /usr/local/go</td><td><span class="tag" style="background:rgba(0,255,178,.1);color:#00FFB2">✓ Active</span></td></tr>
+        <tr><td>Python</td><td>3.12.3</td><td>WSL2 native</td><td><span class="tag" style="background:rgba(0,255,178,.1);color:#00FFB2">✓ Active</span></td></tr>
+        <tr><td>Node.js</td><td>22.22.0</td><td>WSL2 npm-global</td><td><span class="tag" style="background:rgba(0,255,178,.1);color:#00FFB2">✓ Active</span></td></tr>
+        <tr><td>.NET</td><td>10.0.103</td><td>WSL2 + Windows</td><td><span class="tag" style="background:rgba(0,255,178,.1);color:#00FFB2">✓ Active</span></td></tr>
+        <tr><td>Docker</td><td>28.2.2</td><td>WSL2 engine</td><td><span class="tag" style="background:rgba(0,255,178,.1);color:#00FFB2">✓ Running</span></td></tr>
+        <tr><td>kubectl</td><td>v1.35.1</td><td>~/bin/kubectl</td><td><span class="tag" style="background:rgba(0,255,178,.1);color:#00FFB2">✓ Active</span></td></tr>
+        <tr><td>Minikube</td><td>v1.38.1</td><td>~/bin/minikube</td><td><span class="tag" style="background:rgba(0,255,178,.1);color:#00FFB2">✓ Running</span></td></tr>
+      </table>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <div class="card-label">DIRECTORY STRUCTURE</div>
+        <div class="code-block">~/
+├── bin/          <span class="comment"># kubectl, minikube, engx</span>
+├── dev/
+│   ├── nexus/    <span class="annotation"># Nexus engine (Go)</span>
+│   ├── projects/
+│   │   └── ums/  <span class="annotation"># .NET microservices</span>
+│   ├── experiments/
+│   │   └── ai/   <span class="annotation"># AI agent platform</span>
+│   ├── learning/
+│   ├── tools/
+│   └── archive/
+└── go/           <span class="comment"># Go workspace</span></div>
+      </div>
+      <div class="card">
+        <div class="card-label">OBSERVABILITY STACK</div>
+        <table class="tbl">
+          <tr><th>Service</th><th>URL</th></tr>
+          <tr><td>API Gateway</td><td><code>localhost:8080</code></td></tr>
+          <tr><td>Grafana</td><td><code>localhost:3000</code></td></tr>
+          <tr><td>Prometheus</td><td><code>localhost:9090</code></td></tr>
+          <tr><td>Jaeger</td><td><code>localhost:16686</code></td></tr>
+          <tr><td>Seq Logs</td><td><code>localhost:8081</code></td></tr>
+          <tr><td>BFF</td><td><code>localhost:5001</code></td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PROJECTS TAB ── -->
+  <div id="panel-projects" class="panel">
+
+    <!-- UMS -->
+    <div class="project-card" style="background:rgba(0,212,255,0.04);border:1px solid rgba(0,212,255,0.15)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <div style="font-size:9px;letter-spacing:4px;color:#00D4FF;margin-bottom:4px;font-family:'JetBrains Mono',monospace">PROJECT 01</div>
+          <div style="font-size:20px;font-weight:900">UMS — University Management System</div>
+        </div>
+        <span class="tag" style="background:rgba(0,212,255,.1);color:#00D4FF;font-size:11px;padding:4px 12px">PRODUCTION</span>
+      </div>
+      <table class="tbl">
+        <tr><th>Property</th><th>Value</th></tr>
+        <tr><td>Stack</td><td>.NET 10, Clean Architecture, CQRS, MediatR</td></tr>
+        <tr><td>Auth</td><td>OpenIddict (RSA keys, password flow)</td></tr>
+        <tr><td>Messaging</td><td>Kafka + Outbox Pattern (9 topics)</td></tr>
+        <tr><td>Database</td><td>PostgreSQL 16 per service (EF Core)</td></tr>
+        <tr><td>Gateway</td><td>YARP reverse proxy</td></tr>
+        <tr><td>Windows Path</td><td><code>C:\Users\harsh\source\repos\AspireApp1</code></td></tr>
+        <tr><td>WSL2 Path</td><td><code>/mnt/c/Users/harsh/source/repos/AspireApp1</code></td></tr>
+        <tr><td>GitHub</td><td><a href="https://github.com/Harshmaury/AspireApp1" style="color:#00D4FF">github.com/Harshmaury/AspireApp1</a></td></tr>
+      </table>
+      <div style="margin-top:16px">
+        <div style="font-size:9px;letter-spacing:3px;color:#00D4FF;margin-bottom:8px;font-family:'JetBrains Mono',monospace">9 MICROSERVICES</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">identity-api :5002</span>
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">academic-api :5004</span>
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">student-api :5003</span>
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">attendance-api :5005</span>
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">examination-api :5006</span>
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">fee-api :5007</span>
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">faculty-api :5008</span>
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">hostel-api :5009</span>
+          <span class="tag" style="background:rgba(0,212,255,.08);color:#00D4FF">notification-api :5010</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- NEXUS -->
+    <div class="project-card" style="background:rgba(123,97,255,0.04);border:1px solid rgba(123,97,255,0.15)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <div style="font-size:9px;letter-spacing:4px;color:#7B61FF;margin-bottom:4px;font-family:'JetBrains Mono',monospace">PROJECT 02</div>
+          <div style="font-size:20px;font-weight:900">Nexus — Local Developer Control Plane</div>
+        </div>
+        <span class="tag" style="background:rgba(123,97,255,.1);color:#7B61FF;font-size:11px;padding:4px 12px">IN DEVELOPMENT</span>
+      </div>
+      <table class="tbl">
+        <tr><th>Property</th><th>Value</th></tr>
+        <tr><td>Stack</td><td>Go 1.24, SQLite, Unix Socket</td></tr>
+        <tr><td>Purpose</td><td>Platform daemon — manages ALL other projects</td></tr>
+        <tr><td>Architecture</td><td>Daemon + Event Bus + Plugin System</td></tr>
+        <tr><td>WSL2 Path</td><td><code>~/dev/nexus</code></td></tr>
+        <tr><td>GitHub</td><td><a href="https://github.com/Harshmaury/Nexus" style="color:#7B61FF">github.com/Harshmaury/Nexus</a></td></tr>
+        <tr><td>Phase</td><td>Phase 1 — Daemon Core (building now)</td></tr>
+      </table>
+    </div>
+
+    <!-- AI -->
+    <div class="project-card" style="background:rgba(0,255,178,0.04);border:1px solid rgba(0,255,178,0.15)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <div style="font-size:9px;letter-spacing:4px;color:#00FFB2;margin-bottom:4px;font-family:'JetBrains Mono',monospace">PROJECT 03</div>
+          <div style="font-size:20px;font-weight:900">AI Agent Platform</div>
+        </div>
+        <span class="tag" style="background:rgba(0,255,178,.1);color:#00FFB2;font-size:11px;padding:4px 12px">RUNNING</span>
+      </div>
+      <table class="tbl">
+        <tr><th>Property</th><th>Value</th></tr>
+        <tr><td>Stack</td><td>Python 3.12, Docker Compose</td></tr>
+        <tr><td>Container</td><td>ai-ai_bridge-1 (port 8000, 5900)</td></tr>
+        <tr><td>WSL2 Path</td><td><code>~/dev/experiments/ai</code></td></tr>
+        <tr><td>Status</td><td>Running — do not stop without saving state</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── WORKFLOW TAB ── -->
+  <div id="panel-workflow" class="panel">
+
+    <div class="callout" style="background:rgba(255,184,48,0.06);border:1px solid rgba(255,184,48,0.2)">
+      <div class="callout-title" style="color:#FFB830">THE GOLDEN WORKFLOW — SAVE TOKENS, WORK FAST</div>
+      <div style="color:#6B8AA0;font-size:12px">Follow this exact sequence every time you start a new AI chat. Takes 60 seconds. Saves 10 minutes of re-explaining.</div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(0,212,255,.1);border:1px solid rgba(0,212,255,.3);color:#00D4FF">01</div>
+      <div>
+        <div style="font-weight:700;margin-bottom:6px">Generate context ZIP</div>
+        <div style="font-size:12px;color:#3A5070;margin-bottom:10px">Run one command in WSL2. Takes 5 seconds. Produces a clean, token-efficient ZIP.</div>
+        <div class="cmd-row" onclick="copyCmd(this)">
+          <span class="prompt">$</span>
+          <span id="cmd1">context-dump ums "implement JWT refresh token rotation"</span>
+          <span style="margin-left:auto;font-size:10px;color:#2A3A50">click to copy</span>
+        </div>
+        <div style="font-size:11px;color:#2A3A50;margin-top:6px">Replace "ums" with project name. Replace task description with what you need.</div>
+      </div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(123,97,255,.1);border:1px solid rgba(123,97,255,.3);color:#7B61FF">02</div>
+      <div>
+        <div style="font-weight:700;margin-bottom:6px">Upload ZIP + paste skillset prompt</div>
+        <div style="font-size:12px;color:#3A5070;margin-bottom:10px">Upload the ZIP file. Then paste the skillset from the Skillset Prompt tab. AI now knows everything.</div>
+        <div class="callout" style="background:rgba(123,97,255,.05);border:1px solid rgba(123,97,255,.15)">
+          <span style="color:#7B61FF">Claude:</span> Upload ZIP → Paste skillset → Type task<br>
+          <span style="color:#00D4FF">ChatGPT:</span> Upload ZIP → Paste skillset → Type task<br>
+          <span style="color:#FFB830">Gemini:</span> Paste skillset → describe task (no ZIP needed)
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(255,184,48,.1);border:1px solid rgba(255,184,48,.3);color:#FFB830">03</div>
+      <div>
+        <div style="font-weight:700;margin-bottom:6px">AI asks questions FIRST</div>
+        <div style="font-size:12px;color:#3A5070;margin-bottom:10px">The skillset prompt instructs AI to ask clarifying questions before coding. Answer them. This prevents wrong code.</div>
+        <div class="callout" style="background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.06)">
+          <span style="color:#FFB830">AI should ask things like:</span><br>
+          <span style="color:#3A5070">→ "Which service should this be in?"</span><br>
+          <span style="color:#3A5070">→ "Should this use the existing IUserRepository?"</span><br>
+          <span style="color:#3A5070">→ "Do you want unit tests included?"</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(0,255,178,.1);border:1px solid rgba(0,255,178,.3);color:#00FFB2">04</div>
+      <div>
+        <div style="font-weight:700;margin-bottom:6px">AI generates files with smart naming</div>
+        <div style="font-size:12px;color:#3A5070;margin-bottom:10px">Every file follows the Nexus naming convention. Download goes to nexus-drop folder. Auto-routed.</div>
+        <div class="code-block">
+<span class="annotation">// @nexus-project: ums</span>
+<span class="annotation">// @nexus-path: src/Identity/Application/Commands/RefreshToken.cs</span>
+<span class="comment">// ums__refresh_token__20260311_1430.cs</span>
+
+<span class="keyword">namespace</span> UMS.Identity.Application.Commands;
+<span class="comment">// ... clean, professional code follows</span></div>
+      </div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(255,107,107,.1);border:1px solid rgba(255,107,107,.3);color:#FF6B6B">05</div>
+      <div>
+        <div style="font-weight:700;margin-bottom:6px">Nexus Drop routes the file automatically</div>
+        <div style="font-size:12px;color:#3A5070;margin-bottom:10px">File downloaded → Nexus detects it → renames it → moves to exact right location → notifies you.</div>
+        <div class="callout" style="background:rgba(0,255,178,.04);border:1px solid rgba(0,255,178,.15)">
+          <span style="color:#00FFB2">✓ NEXUS DROP</span><br>
+          <span style="color:#3A5070">ums__refresh_token__20260311_1430.cs</span><br>
+          <span style="color:#3A5070">→ ~/dev/projects/ums/src/Identity/Application/Commands/</span><br>
+          <span style="color:#3A5070">confidence: 96% · method: header-comment</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SKILLSET PROMPT TAB ── -->
+  <div id="panel-skillset" class="panel">
+
+    <div class="callout" style="background:rgba(123,97,255,.06);border:1px solid rgba(123,97,255,.2)">
+      <div class="callout-title" style="color:#7B61FF">MASTER AI SKILLSET PROMPT</div>
+      <div style="color:#6B8AA0;font-size:12px">Paste this at the start of EVERY chat with ANY AI. It sets professional coding standards, file naming rules, and forces AI to ask questions before coding.</div>
+    </div>
+
+    <div class="card">
+      <button class="copy-btn" id="skillCopyBtn" onclick="copySkillset()">COPY PROMPT</button>
+      <div class="card-label">PASTE THIS TO AI</div>
+      <div class="code-block" id="skillsetContent" style="margin-top:8px">
+<span class="comment">## NEXUS AI SKILLSET v1.0</span>
+<span class="comment">## Developer: Harsh Maury | github.com/Harshmaury</span>
+<span class="comment">## Read FULLY before responding. No exceptions.</span>
+
+<span class="annotation">### IDENTITY</span>
+You are helping Harsh Maury, a CS engineering student
+building production-grade software. He uses:
+- WSL2 Ubuntu 24.04 + Windows 11
+- Go 1.24, .NET 10, Python 3.12, Node 22
+- Docker 28, Minikube (K8s), GitHub Actions CI/CD
+- Projects: UMS (.NET microservices), Nexus (Go daemon), AI Agent (Python)
+- GitHub: github.com/Harshmaury
+- Context repo: github.com/Harshmaury/Nexus
+
+<span class="annotation">### BEFORE WRITING ANY CODE — MANDATORY</span>
+1. State what you understood from the request in 2 lines
+2. Ask UP TO 3 clarifying questions if anything is unclear
+3. List every file you will create or modify
+4. Confirm approach — wait for approval before coding
+Skip steps 1-4 ONLY if request is completely unambiguous.
+
+<span class="annotation">### FILE NAMING — MANDATORY</span>
+Every generated file MUST follow this convention:
+  [project]__[feature]__[YYYYMMDD_HHMM].[ext]
+
+Examples:
+  ums__identity_refresh__20260311_1430.cs
+  nexus__daemon_engine__20260311_1445.go
+  ai__agent_memory__20260311_1500.py
+
+Every file MUST start with:
+  Line 1: // @nexus-project: [project-name]
+  Line 2: // @nexus-path: [relative/path/to/file]
+
+<span class="annotation">### CODE QUALITY — MANDATORY</span>
+- SOLID principles — no exceptions
+- Single responsibility per function (max 40 lines)
+- All errors handled explicitly — never swallow
+- Named constants only — no magic numbers
+- Dependency injection everywhere
+- Repository pattern for data access
+- Interfaces over concrete types
+- Self-documenting names (no abbreviations)
+
+<span class="annotation">### ARCHITECTURE</span>
+- Clean Architecture: Domain → Application → Infrastructure
+- CQRS with MediatR (for .NET projects)
+- Event-driven communication between services
+- Never couple Nexus to specific projects
+
+<span class="annotation">### SECURITY</span>
+- Never log sensitive data or secrets
+- Validate all inputs at boundaries
+- Parameterized queries only
+- Secrets from environment variables only
+
+<span class="annotation">### TESTING</span>
+- Every public function needs a test
+- Table-driven tests (Go) / parametrize (Python) / Theory (C#)
+- Test file: [original_name]_test.[ext]
+
+<span class="annotation">### IEEE STANDARDS</span>
+- IEEE 830: requirements documentation
+- IEEE 1016: software design
+- REST: RFC 7231 + OpenAPI 3.0
+- Git commits: Conventional Commits spec
+- Versioning: SemVer 2.0
+
+<span class="annotation">### CURRENT TASK</span>
+[REPLACE THIS LINE WITH YOUR TASK]
+
+<span class="annotation">### PROJECT CONTEXT</span>
+[UPLOAD THE NEXUS CONTEXT ZIP OR PASTE CONTEXT HERE]</div>
+    </div>
+  </div>
+
+  <!-- ── COMMANDS TAB ── -->
+  <div id="panel-commands" class="panel">
+
+    <div class="card">
+      <div class="card-label">CONTEXT DUMP COMMANDS</div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>context-dump all "general overview"</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">all projects</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>context-dump ums "your task here"</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">UMS only</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>context-dump nexus "your task here"</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">Nexus only</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>context-dump ai "your task here"</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">AI project only</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">NEXUS COMMANDS</div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>engx status</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">live dashboard</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>engx start &lt;service&gt;</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">start a service</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>engx stop &lt;service&gt;</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">stop a service</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>engx logs &lt;service&gt;</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">stream logs</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>engx doctor</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">diagnose issues</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>engx deploy &lt;service&gt;</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">build + push</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">KUBERNETES SHORTCUTS</div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>kgp</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">kubectl get pods</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>kgs</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">kubectl get services</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>klogs &lt;pod&gt;</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">kubectl logs -f</span></div>
+      <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>mk status</span><span style="margin-left:auto;font-size:10px;color:#2A3A50">minikube status</span></div>
+    </div>
+  </div>
+
+  <!-- ── NEW PROJECT TAB ── -->
+  <div id="panel-integrate" class="panel">
+
+    <div class="callout" style="background:rgba(0,255,178,.05);border:1px solid rgba(0,255,178,.2)">
+      <div class="callout-title" style="color:#00FFB2">ADD ANY NEW PROJECT IN 3 MINUTES</div>
+      <div style="color:#6B8AA0;font-size:12px">Nexus is language-agnostic. These steps work for Go, Python, .NET, Node, Rust, Java — any stack.</div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(0,255,178,.1);border:1px solid rgba(0,255,178,.3);color:#00FFB2">1</div>
+      <div style="flex:1">
+        <div style="font-weight:700;margin-bottom:6px">Create project folder</div>
+        <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>mkdir -p ~/dev/projects/my-new-project && cd ~/dev/projects/my-new-project && git init && git remote add origin https://github.com/Harshmaury/my-new-project.git</span></div>
+      </div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(0,212,255,.1);border:1px solid rgba(0,212,255,.3);color:#00D4FF">2</div>
+      <div style="flex:1">
+        <div style="font-weight:700;margin-bottom:6px">Add project manifest (.nexus.yaml)</div>
+        <div style="font-size:12px;color:#3A5070;margin-bottom:10px">Create this file in your project root. Nexus reads it to understand the project.</div>
+        <div class="code-block"><span class="comment"># .nexus.yaml — place in project root</span>
+<span class="annotation">name</span>: my-new-project
+<span class="annotation">type</span>: web-api          <span class="comment"># web-api | microservice | ai | tool | library</span>
+<span class="annotation">language</span>: go           <span class="comment"># go | dotnet | python | node | rust</span>
+<span class="annotation">version</span>: 1.0.0
+
+<span class="annotation">paths</span>:
+  root: ~/dev/projects/my-new-project
+  src: src/
+  tests: tests/
+
+<span class="annotation">commands</span>:
+  start: go run ./cmd/server/
+  build: go build ./...
+  test: go test ./...
+  lint: golangci-lint run
+
+<span class="annotation">ports</span>:
+  - 8090: api
+
+<span class="annotation">dependencies</span>:
+  runtime: [postgres, redis]   <span class="comment"># what must be running</span>
+
+<span class="annotation">keywords</span>:                     <span class="comment"># for Nexus Drop detection</span>
+  - "package main"
+  - "my-new-project"</div>
+      </div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(123,97,255,.1);border:1px solid rgba(123,97,255,.3);color:#7B61FF">3</div>
+      <div style="flex:1">
+        <div style="font-weight:700;margin-bottom:6px">Register with Nexus</div>
+        <div class="cmd-row" onclick="copyCmd(this)"><span class="prompt">$</span><span>engx register ~/dev/projects/my-new-project</span></div>
+        <div style="font-size:12px;color:#3A5070;margin-top:8px">Nexus reads .nexus.yaml, adds to SQLite registry, starts watching for health, enables Drop routing. Done.</div>
+      </div>
+    </div>
+
+    <div class="workflow-step">
+      <div class="step-num" style="background:rgba(255,184,48,.1);border:1px solid rgba(255,184,48,.3);color:#FFB830">4</div>
+      <div style="flex:1">
+        <div style="font-weight:700;margin-bottom:6px">Add to context dump</div>
+        <div style="font-size:12px;color:#3A5070;margin-bottom:10px">Open context-dump.sh and add one line to the PROJECTS array:</div>
+        <div class="code-block"><span class="comment"># In ~/dev/nexus/scripts/context-dump.sh</span>
+<span class="keyword">declare</span> -A PROJECTS
+PROJECTS[<span class="string">"nexus"</span>]=<span class="string">"$HOME/dev/nexus"</span>
+PROJECTS[<span class="string">"ums"</span>]=<span class="string">"/mnt/c/Users/harsh/source/repos/AspireApp1"</span>
+PROJECTS[<span class="string">"ai"</span>]=<span class="string">"$HOME/dev/experiments/ai"</span>
+<span class="annotation">PROJECTS["my-new-project"]="$HOME/dev/projects/my-new-project"</span>  <span class="comment"># ← ADD THIS</span></div>
+      </div>
+    </div>
+
+    <div class="callout" style="background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.06);margin-top:8px">
+      <div class="callout-title" style="color:#6B7A9F">THAT'S IT. 3 MINUTES. PROJECT IS FULLY INTEGRATED.</div>
+      <div style="color:#2A3A50;font-size:12px">
+        ✓ Nexus watches it · ✓ Drop routes files to it · ✓ context-dump includes it · ✓ AI knows about it
+      </div>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <span>NEXUS · HARSH MAURY · github.com/Harshmaury/Nexus</span>
+    <span id="genTime"></span>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast">✓ Copied to clipboard</div>
+
+<script>
+  document.getElementById('genTime').textContent = 'Generated: ' + new Date().toLocaleString();
+
+  function showTab(name) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('panel-' + name).classList.add('active');
+    event.target.classList.add('active');
+  }
+
+  function copyCmd(el) {
+    const text = el.querySelector('span:nth-child(2)').textContent;
+    navigator.clipboard?.writeText(text).then(() => showToast('Command copied!'));
+  }
+
+  function copySkillset() {
+    const content = document.getElementById('skillsetContent').innerText;
+    navigator.clipboard?.writeText(content).then(() => {
+      const btn = document.getElementById('skillCopyBtn');
+      btn.textContent = '✓ COPIED';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = 'COPY PROMPT'; btn.classList.remove('copied'); }, 2000);
+    });
+    showToast('Skillset prompt copied!');
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = '✓ ' + msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+  }
+</script>
+</body>
+</html>
