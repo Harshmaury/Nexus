@@ -23,7 +23,7 @@ const (
 	StateStopped     ServiceState = "stopped"
 	StateCrashed     ServiceState = "crashed"
 	StateRecovering  ServiceState = "recovering"
-	StateMaintenance ServiceState = "maintenance" // 3 failures in 60s
+	StateMaintenance ServiceState = "maintenance"
 	StateUnknown     ServiceState = "unknown"
 )
 
@@ -40,50 +40,68 @@ const (
 type EventType string
 
 const (
-	EventServiceStarted  EventType = "SERVICE_STARTED"
-	EventServiceStopped  EventType = "SERVICE_STOPPED"
-	EventServiceCrashed  EventType = "SERVICE_CRASHED"
-	EventServiceHealed   EventType = "SERVICE_HEALED"
-	EventStateChanged    EventType = "STATE_CHANGED"
-	EventSystemAlert     EventType = "SYSTEM_ALERT"
-	EventFileDropped     EventType = "FILE_DROPPED"
-	EventFileRouted      EventType = "FILE_ROUTED"
+	EventServiceStarted EventType = "SERVICE_STARTED"
+	EventServiceStopped EventType = "SERVICE_STOPPED"
+	EventServiceCrashed EventType = "SERVICE_CRASHED"
+	EventServiceHealed  EventType = "SERVICE_HEALED"
+	EventStateChanged   EventType = "STATE_CHANGED"
+	EventSystemAlert    EventType = "SYSTEM_ALERT"
+	EventFileDropped    EventType = "FILE_DROPPED"
+	EventFileRouted     EventType = "FILE_ROUTED"
+)
+
+// EventSource identifies which component emitted an event.
+type EventSource string
+
+const (
+	SourceDaemon        EventSource = "daemon"
+	SourceDockerPlugin  EventSource = "docker-plugin"
+	SourceK8sPlugin     EventSource = "k8s-plugin"
+	SourceHealthPlugin  EventSource = "health-plugin"
+	SourceRecovery      EventSource = "recovery-plugin"
+	SourceDropSystem    EventSource = "drop-system"
+	SourceCLI           EventSource = "cli"
+	SourceProjectCtrl   EventSource = "project-controller"
 )
 
 // ── MODELS ───────────────────────────────────────────────────────────────────
 
 // Service is the core entity — one row per managed service.
 type Service struct {
-	ID           string       // unique identifier e.g. "ums-identity-api"
-	Name         string       // human readable e.g. "Identity API"
-	Project      string       // which project owns it e.g. "ums"
-	DesiredState ServiceState // what SHOULD be running
-	ActualState  ServiceState // what IS running right now
-	Provider     ProviderType // which runtime manages it
-	Config       string       // JSON config blob
-	FailCount    int          // consecutive failures (for back-off)
-	LastFailedAt *time.Time   // when it last crashed
+	ID           string
+	Name         string
+	Project      string
+	DesiredState ServiceState
+	ActualState  ServiceState
+	Provider     ProviderType
+	Config       string
+	FailCount    int
+	LastFailedAt *time.Time
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
 // Event is an immutable log of everything that happened.
+// source — which component emitted it (docker-plugin, daemon, cli...)
+// trace_id — groups related events across a single operation (e.g. crash→recover→heal)
 type Event struct {
 	ID        int64
 	ServiceID string
 	Type      EventType
-	Payload   string // JSON
+	Source    EventSource
+	TraceID   string
+	Payload   string
 	CreatedAt time.Time
 }
 
 // HealthLog records every health check result.
 type HealthLog struct {
-	ID          int64
-	ServiceID   string
-	Status      ServiceState
-	ExitCode    int
-	Message     string
-	CheckedAt   time.Time
+	ID        int64
+	ServiceID string
+	Status    ServiceState
+	ExitCode  int
+	Message   string
+	CheckedAt time.Time
 }
 
 // DownloadLog records every file processed by Nexus Drop.
@@ -94,27 +112,26 @@ type DownloadLog struct {
 	Project      string
 	Source       string
 	Destination  string
-	Method       string  // filename-prefix | header-comment | content-scan | quarantined
-	Confidence   float64 // 0.0 to 1.0
+	Method       string
+	Confidence   float64
 	DownloadedAt time.Time
 }
 
 // Project is a registered project manifest.
 type Project struct {
-	ID          string // e.g. "ums"
-	Name        string
-	Path        string
-	Language    string
-	ProjectType string // web-api | microservice | ai | tool
-	ConfigJSON  string // full .nexus.yaml content as JSON
+	ID           string
+	Name         string
+	Path         string
+	Language     string
+	ProjectType  string
+	ConfigJSON   string
 	RegisteredAt time.Time
-	UpdatedAt   time.Time
+	UpdatedAt    time.Time
 }
 
 // ── STORE ────────────────────────────────────────────────────────────────────
 
 // Store is the single source of truth for the Nexus daemon.
-// All reads and writes to state go through this struct.
 type Store struct {
 	db *sql.DB
 }
@@ -127,7 +144,10 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Verify connection
+	// SQLite performs best with a single writer — prevent locking errors.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
@@ -157,14 +177,14 @@ func (s *Store) UpsertService(svc *Service) error {
 			created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			name         = excluded.name,
-			desired_state = excluded.desired_state,
-			actual_state  = excluded.actual_state,
-			provider      = excluded.provider,
-			config        = excluded.config,
-			fail_count    = excluded.fail_count,
+			name           = excluded.name,
+			desired_state  = excluded.desired_state,
+			actual_state   = excluded.actual_state,
+			provider       = excluded.provider,
+			config         = excluded.config,
+			fail_count     = excluded.fail_count,
 			last_failed_at = excluded.last_failed_at,
-			updated_at    = excluded.updated_at
+			updated_at     = excluded.updated_at
 	`
 	now := time.Now().UTC()
 	_, err := s.db.Exec(query,
@@ -291,11 +311,11 @@ func (s *Store) ResetFailCount(id string) error {
 
 // ── EVENT OPERATIONS ─────────────────────────────────────────────────────────
 
-// AppendEvent writes an immutable event to the log.
-func (s *Store) AppendEvent(serviceID string, eventType EventType, payload string) error {
+// AppendEvent writes an immutable event with source and optional trace ID.
+func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventSource, traceID string, payload string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO events (service_id, type, payload, created_at) VALUES (?, ?, ?, ?)`,
-		serviceID, eventType, payload, time.Now().UTC(),
+		`INSERT INTO events (service_id, type, source, trace_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		serviceID, eventType, source, traceID, payload, time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("append event %s for %s: %w", eventType, serviceID, err)
@@ -306,7 +326,8 @@ func (s *Store) AppendEvent(serviceID string, eventType EventType, payload strin
 // GetRecentEvents returns the N most recent events.
 func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id, service_id, type, payload, created_at FROM events ORDER BY created_at DESC LIMIT ?`,
+		`SELECT id, service_id, type, source, trace_id, payload, created_at
+		 FROM events ORDER BY created_at DESC LIMIT ?`,
 		limit,
 	)
 	if err != nil {
@@ -317,7 +338,30 @@ func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	var events []*Event
 	for rows.Next() {
 		e := &Event{}
-		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.Payload, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// GetEventsByTrace returns all events sharing a trace ID — full operation history.
+func (s *Store) GetEventsByTrace(traceID string) ([]*Event, error) {
+	rows, err := s.db.Query(
+		`SELECT id, service_id, type, source, trace_id, payload, created_at
+		 FROM events WHERE trace_id = ? ORDER BY created_at ASC`,
+		traceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query events by trace %s: %w", traceID, err)
+	}
+	defer rows.Close()
+
+	var events []*Event
+	for rows.Next() {
+		e := &Event{}
+		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		events = append(events, e)
@@ -339,7 +383,7 @@ func (s *Store) LogHealth(serviceID string, status ServiceState, exitCode int, m
 	return nil
 }
 
-// GetRecentFailures returns health log entries where status = crashed, last N minutes.
+// GetRecentFailures counts crashes for a service within the last N minutes.
 func (s *Store) GetRecentFailures(serviceID string, withinMinutes int) (int, error) {
 	since := time.Now().UTC().Add(-time.Duration(withinMinutes) * time.Minute)
 	var count int
@@ -375,10 +419,28 @@ func (s *Store) RegisterProject(p *Project) error {
 	return nil
 }
 
+// GetProject returns a single project by ID.
+func (s *Store) GetProject(id string) (*Project, error) {
+	row := s.db.QueryRow(
+		`SELECT id, name, path, language, project_type, config_json, registered_at, updated_at
+		 FROM projects WHERE id = ?`, id,
+	)
+	p := &Project{}
+	err := row.Scan(&p.ID, &p.Name, &p.Path, &p.Language, &p.ProjectType, &p.ConfigJSON, &p.RegisteredAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get project %s: %w", id, err)
+	}
+	return p, nil
+}
+
 // GetAllProjects returns every registered project.
 func (s *Store) GetAllProjects() ([]*Project, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, path, language, project_type, config_json, registered_at, updated_at FROM projects ORDER BY name`,
+		`SELECT id, name, path, language, project_type, config_json, registered_at, updated_at
+		 FROM projects ORDER BY name`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query all projects: %w", err)
@@ -434,8 +496,6 @@ func (s *Store) GetRecentDownloads(limit int) ([]*DownloadLog, error) {
 
 // ── MIGRATIONS ───────────────────────────────────────────────────────────────
 
-// migrate runs all schema migrations in order.
-// Safe to call multiple times — uses IF NOT EXISTS.
 func (s *Store) migrate() error {
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS services (
@@ -452,10 +512,14 @@ func (s *Store) migrate() error {
 			updated_at     DATETIME NOT NULL
 		)`,
 
+		// source  — which component emitted this event
+		// trace_id — groups all events from a single operation
 		`CREATE TABLE IF NOT EXISTS events (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
 			service_id TEXT NOT NULL,
 			type       TEXT NOT NULL,
+			source     TEXT NOT NULL DEFAULT '',
+			trace_id   TEXT NOT NULL DEFAULT '',
 			payload    TEXT NOT NULL DEFAULT '{}',
 			created_at DATETIME NOT NULL
 		)`,
@@ -492,14 +556,16 @@ func (s *Store) migrate() error {
 			downloaded_at DATETIME NOT NULL
 		)`,
 
-		// Indexes for fast queries
-		`CREATE INDEX IF NOT EXISTS idx_services_project      ON services(project)`,
+		// Indexes
+		`CREATE INDEX IF NOT EXISTS idx_services_project       ON services(project)`,
 		`CREATE INDEX IF NOT EXISTS idx_services_desired_state ON services(desired_state)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_service_id     ON events(service_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_created_at     ON events(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_health_service_id     ON health_logs(service_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_health_checked_at     ON health_logs(checked_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_download_project      ON download_log(project)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_service_id      ON events(service_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_created_at      ON events(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_trace_id        ON events(trace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_source          ON events(source)`,
+		`CREATE INDEX IF NOT EXISTS idx_health_service_id      ON health_logs(service_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_health_checked_at      ON health_logs(checked_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_download_project       ON download_log(project)`,
 	}
 
 	for _, migration := range migrations {
