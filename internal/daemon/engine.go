@@ -178,7 +178,7 @@ func (e *Engine) reconcile(ctx context.Context) ReconcileResult {
 	}
 
 	for _, svc := range services {
-		action := e.reconcileService(ctx, svc, result.CycleID)
+		action := e.reconcileService(ctx, svc, result.CycleID, &result)
 		switch action {
 		case "started":
 			result.Started = append(result.Started, svc.ID)
@@ -188,8 +188,6 @@ func (e *Engine) reconcile(ctx context.Context) ReconcileResult {
 			result.Maintained = append(result.Maintained, svc.ID)
 		case "skipped":
 			result.Skipped = append(result.Skipped, svc.ID)
-		case "error":
-			// error was already appended inside reconcileService
 		}
 	}
 
@@ -199,11 +197,13 @@ func (e *Engine) reconcile(ctx context.Context) ReconcileResult {
 
 // reconcileService drives a single service toward its desired state.
 // Returns the action taken: "started" | "stopped" | "maintenance" | "skipped" | "error"
-func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycleID string) string {
+// All errors are appended to result before returning "error" — never silent.
+func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycleID string, result *ReconcileResult) string {
 	traceID := fmt.Sprintf("%s-%s", cycleID, svc.ID)
 
 	// Services in maintenance mode are not touched by the reconciler.
 	// A human must inspect and manually clear them.
+	// TODO: move maintenance threshold check to recovery controller (06)
 	if svc.ActualState == state.StateMaintenance {
 		return "skipped"
 	}
@@ -212,12 +212,22 @@ func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycle
 	actualState, err := e.checkActualState(ctx, svc)
 	if err != nil {
 		_ = e.store.SetActualState(svc.ID, state.StateUnknown)
+		result.Errors = append(result.Errors, ReconcileError{
+			ServiceID: svc.ID,
+			Action:    "check-actual-state",
+			Err:       err,
+		})
 		return "error"
 	}
 
 	// Sync actual state to DB if it changed externally.
 	if actualState != svc.ActualState {
 		if err := e.store.SetActualState(svc.ID, actualState); err != nil {
+			result.Errors = append(result.Errors, ReconcileError{
+				ServiceID: svc.ID,
+				Action:    "sync-actual-state",
+				Err:       err,
+			})
 			return "error"
 		}
 		svc.ActualState = actualState
@@ -231,7 +241,7 @@ func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycle
 	// ── DESIRED: RUNNING, ACTUAL: NOT RUNNING ────────────────────────────────
 	if svc.DesiredState == state.StateRunning && svc.ActualState != state.StateRunning {
 
-		// Check if too many recent failures — put into maintenance instead of retrying.
+		// TODO: move this failure threshold check to recovery controller (06)
 		failures, err := e.store.GetRecentFailures(svc.ID, failureWindowMinutes)
 		if err == nil && failures >= maxFailuresBeforeMaintenance {
 			_ = e.store.SetActualState(svc.ID, state.StateMaintenance)
@@ -257,6 +267,11 @@ func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycle
 				Status:    string(state.StateCrashed),
 				Message:   err.Error(),
 			})
+			result.Errors = append(result.Errors, ReconcileError{
+				ServiceID: svc.ID,
+				Action:    "start",
+				Err:       err,
+			})
 			return "error"
 		}
 
@@ -274,6 +289,11 @@ func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycle
 				fmt.Sprintf("failed to stop service %s: %v", svc.ID, err),
 				map[string]string{"service_id": svc.ID},
 			)
+			result.Errors = append(result.Errors, ReconcileError{
+				ServiceID: svc.ID,
+				Action:    "stop",
+				Err:       err,
+			})
 			return "error"
 		}
 
