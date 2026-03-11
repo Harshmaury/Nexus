@@ -6,9 +6,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
@@ -41,7 +43,7 @@ func rootCmd() *cobra.Command {
 		Use:   "engx",
 		Short: "Nexus — Local Developer Control Plane",
 		Long: `engx controls your entire local developer environment.
-Start, stop, and monitor projects and services from one place.
+Start, stop, monitor, and register projects from one place.
 
 GitHub: https://github.com/Harshmaury/Nexus`,
 		Version: cliVersion,
@@ -54,12 +56,147 @@ GitHub: https://github.com/Harshmaury/Nexus`,
 
 	root.AddCommand(
 		projectCmd(&dbPath),
+		registerCmd(&dbPath),
 		servicesCmd(&dbPath),
 		eventsCmd(&dbPath),
 		versionCmd(),
 	)
 
 	return root
+}
+
+// ── REGISTER COMMAND ─────────────────────────────────────────────────────────
+
+// registerCmd reads .nexus.yaml from the given path and registers the project.
+func registerCmd(dbPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "register <project-path>",
+		Short: "Register a project with Nexus",
+		Long: `Register reads .nexus.yaml from the project root and adds
+the project to the Nexus state database.
+
+Example .nexus.yaml:
+  name: my-project
+  type: web-api
+  language: go`,
+		Args: cobra.ExactArgs(1),
+		Example: `  engx register ~/dev/projects/ums
+  engx register .`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			projectPath, err := filepath.Abs(args[0])
+			if err != nil {
+				return fmt.Errorf("resolve path: %w", err)
+			}
+
+			manifest, err := readNexusManifest(projectPath)
+			if err != nil {
+				return err
+			}
+
+			store, err := openStore(dbPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+
+			project := &state.Project{
+				ID:          manifest.id,
+				Name:        manifest.name,
+				Path:        projectPath,
+				Language:    manifest.language,
+				ProjectType: manifest.projectType,
+				ConfigJSON:  manifest.rawYAML,
+			}
+
+			if err := store.RegisterProject(project); err != nil {
+				return fmt.Errorf("register project: %w", err)
+			}
+
+			fmt.Printf("✓ Registered project: %s\n", manifest.name)
+			fmt.Printf("  ID:       %s\n", manifest.id)
+			fmt.Printf("  Path:     %s\n", projectPath)
+			fmt.Printf("  Language: %s\n", manifest.language)
+			fmt.Printf("  Type:     %s\n", manifest.projectType)
+			fmt.Printf("\n  Run 'engx project status %s' to check services\n", manifest.id)
+			return nil
+		},
+	}
+}
+
+// nexusManifest holds parsed .nexus.yaml fields.
+type nexusManifest struct {
+	id          string
+	name        string
+	language    string
+	projectType string
+	rawYAML     string
+}
+
+// readNexusManifest parses .nexus.yaml with a simple line scanner.
+// We avoid a YAML dependency — the format is intentionally minimal.
+func readNexusManifest(projectPath string) (*nexusManifest, error) {
+	manifestPath := filepath.Join(projectPath, ".nexus.yaml")
+
+	file, err := os.Open(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf(
+				".nexus.yaml not found in %s\n\nCreate one:\n  name: my-project\n  type: web-api\n  language: go",
+				projectPath,
+			)
+		}
+		return nil, fmt.Errorf("open .nexus.yaml: %w", err)
+	}
+	defer file.Close()
+
+	manifest := &nexusManifest{}
+	var rawLines []string
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		rawLines = append(rawLines, line)
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+			continue
+		}
+
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		switch key {
+		case "name":
+			manifest.name = value
+			// derive ID from name: lowercase, spaces to dashes
+			manifest.id = strings.ToLower(strings.ReplaceAll(value, " ", "-"))
+		case "id":
+			manifest.id = value // explicit ID overrides derived one
+		case "language":
+			manifest.language = value
+		case "type":
+			manifest.projectType = value
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read .nexus.yaml: %w", err)
+	}
+
+	if manifest.name == "" {
+		return nil, fmt.Errorf(".nexus.yaml is missing required field: name")
+	}
+	if manifest.id == "" {
+		return nil, fmt.Errorf(".nexus.yaml is missing required field: name or id")
+	}
+
+	manifest.rawYAML = strings.Join(rawLines, "\n")
+	return manifest, nil
 }
 
 // ── PROJECT COMMANDS ─────────────────────────────────────────────────────────
@@ -85,11 +222,10 @@ func projectCmd(dbPath *string) *cobra.Command {
 
 func projectStartCmd(dbPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "start <project-id>",
-		Short: "Start all services in a project",
-		Args:  cobra.ExactArgs(1),
-		Example: `  engx project start ums
-  engx project start nexus`,
+		Use:     "start <project-id>",
+		Short:   "Start all services in a project",
+		Args:    cobra.ExactArgs(1),
+		Example: `  engx project start ums`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectID := args[0]
 
@@ -112,7 +248,7 @@ func projectStartCmd(dbPath *string) *cobra.Command {
 			}
 
 			fmt.Printf("✓ Queued %d service(s) to start — daemon will reconcile\n", count)
-			fmt.Printf("  Run 'engx project status %s' to monitor\n", projectID)
+			fmt.Printf("  Run: engx project status %s\n", projectID)
 			return nil
 		},
 	}
@@ -120,11 +256,10 @@ func projectStartCmd(dbPath *string) *cobra.Command {
 
 func projectStopCmd(dbPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop <project-id>",
-		Short: "Stop all services in a project",
-		Args:  cobra.ExactArgs(1),
-		Example: `  engx project stop ums
-  engx project stop nexus`,
+		Use:     "stop <project-id>",
+		Short:   "Stop all services in a project",
+		Args:    cobra.ExactArgs(1),
+		Example: `  engx project stop ums`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectID := args[0]
 
@@ -146,7 +281,7 @@ func projectStopCmd(dbPath *string) *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("✓ Queued %d service(s) to stop — daemon will reconcile\n", count)
+			fmt.Printf("✓ Queued %d service(s) to stop\n", count)
 			return nil
 		},
 	}
@@ -178,7 +313,7 @@ func projectStatusCmd(dbPath *string) *cobra.Command {
 					return nil
 				}
 				for _, s := range statuses {
-					fmt.Println(ctrl.RenderStatus(s))
+					fmt.Print(renderStatus(s))
 				}
 				return nil
 			}
@@ -192,7 +327,7 @@ func projectStatusCmd(dbPath *string) *cobra.Command {
 				return fmt.Errorf("get project status: %w", err)
 			}
 
-			fmt.Println(ctrl.RenderStatus(status))
+			fmt.Print(renderStatus(status))
 			return nil
 		},
 	}
@@ -200,6 +335,56 @@ func projectStatusCmd(dbPath *string) *cobra.Command {
 	cmd.Flags().BoolVar(&showAll, "all", false, "show status for all registered projects")
 	return cmd
 }
+
+// ── RENDER STATUS (CLI CONCERN) ───────────────────────────────────────────────
+
+// renderStatus formats a ProjectStatus for terminal output.
+// Rendering is a CLI concern — controllers only return data.
+func renderStatus(status *controllers.ProjectStatus) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("\nPROJECT: %s (%s)\n", strings.ToUpper(status.ProjectID), status.ProjectName))
+	sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %-10s %s\n",
+		"SERVICE", "DESIRED", "ACTUAL", "PROVIDER", "HEALTH"))
+	sb.WriteString(strings.Repeat("─", 78) + "\n")
+
+	healthy := 0
+	for _, svc := range status.Services {
+		indicator := colorGreen("✓")
+		if !svc.IsHealthy {
+			indicator = colorRed("✗")
+		}
+		if svc.FailCount > 0 {
+			indicator += fmt.Sprintf("  (%d failures)", svc.FailCount)
+		}
+
+		sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %-10s %s\n",
+			svc.Name,
+			string(svc.DesiredState),
+			string(svc.ActualState),
+			string(svc.Provider),
+			indicator,
+		))
+
+		if svc.IsHealthy {
+			healthy++
+		}
+	}
+
+	total := len(status.Services)
+	summary := fmt.Sprintf("\n%d/%d services healthy", healthy, total)
+	if healthy == total {
+		sb.WriteString(colorGreen(summary) + "\n")
+	} else {
+		sb.WriteString(colorRed(summary) + "\n")
+	}
+
+	return sb.String()
+}
+
+// ANSI colour helpers — only used in the CLI layer.
+func colorGreen(s string) string { return "\033[32m" + s + "\033[0m" }
+func colorRed(s string) string   { return "\033[31m" + s + "\033[0m" }
 
 // ── SERVICES COMMAND ─────────────────────────────────────────────────────────
 
@@ -226,7 +411,7 @@ func servicesCmd(dbPath *string) *cobra.Command {
 
 			fmt.Printf("\n%-30s %-15s %-12s %-12s %-10s\n",
 				"SERVICE", "PROJECT", "DESIRED", "ACTUAL", "PROVIDER")
-			fmt.Println(repeatChar("─", 82))
+			fmt.Println(strings.Repeat("─", 82))
 
 			for _, svc := range services {
 				fmt.Printf("%-30s %-15s %-12s %-12s %-10s\n",
@@ -267,16 +452,16 @@ func eventsCmd(dbPath *string) *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("\n%-20s %-25s %-20s %-16s %s\n",
+			fmt.Printf("\n%-20s %-25s %-20s %-18s %s\n",
 				"TIME", "TYPE", "SERVICE", "SOURCE", "TRACE")
-			fmt.Println(repeatChar("─", 90))
+			fmt.Println(strings.Repeat("─", 92))
 
 			for _, e := range events {
 				traceShort := e.TraceID
-				if len(traceShort) > 16 {
-					traceShort = traceShort[:16] + "…"
+				if len(traceShort) > 18 {
+					traceShort = traceShort[:18] + "…"
 				}
-				fmt.Printf("%-20s %-25s %-20s %-16s %s\n",
+				fmt.Printf("%-20s %-25s %-20s %-18s %s\n",
 					e.CreatedAt.Format("01-02 15:04:05"),
 					string(e.Type),
 					e.ServiceID,
@@ -301,7 +486,7 @@ func versionCmd() *cobra.Command {
 		Short: "Print Nexus version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("engx version %s\n", cliVersion)
-			fmt.Printf("github.com/Harshmaury/Nexus\n")
+			fmt.Println("github.com/Harshmaury/Nexus")
 		},
 	}
 }
@@ -313,18 +498,15 @@ func buildProjectController(dbPath *string) (*controllers.ProjectController, fun
 	if err != nil {
 		return nil, nil, err
 	}
-
 	bus := eventbus.New()
 	ctrl := controllers.NewProjectController(store, bus)
 	cleanup := func() { store.Close() }
-
 	return ctrl, cleanup, nil
 }
 
 func openStore(dbPath *string) (*state.Store, error) {
 	path := expandHome(*dbPath)
 
-	// Ensure directory exists
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create database directory %s: %w", dir, err)
@@ -334,7 +516,6 @@ func openStore(dbPath *string) (*state.Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open state store at %s: %w", path, err)
 	}
-
 	return store, nil
 }
 
@@ -347,12 +528,4 @@ func expandHome(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
-}
-
-func repeatChar(char string, n int) string {
-	result := ""
-	for i := 0; i < n; i++ {
-		result += char
-	}
-	return result
 }

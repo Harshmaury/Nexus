@@ -7,7 +7,6 @@ package controllers
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Harshmaury/Nexus/internal/eventbus"
@@ -28,7 +27,7 @@ type ProjectStatus struct {
 	ProjectID   string
 	ProjectName string
 	Services    []*ServiceStatus
-	StartedAt   time.Time
+	SnapshotAt  time.Time
 }
 
 // ServiceStatus is the health snapshot of a single service within a project.
@@ -48,23 +47,24 @@ type ServiceStatus struct {
 // It never starts/stops services directly — it only sets desired state.
 // The daemon reconciler reads desired state and acts on it.
 type ProjectController struct {
-	store *state.Store
-	bus   *eventbus.Bus
+	store  *state.Store
+	bus    *eventbus.Bus
+	events *state.EventWriter
 }
 
 // NewProjectController creates a ProjectController with required dependencies.
 func NewProjectController(store *state.Store, bus *eventbus.Bus) *ProjectController {
 	return &ProjectController{
-		store: store,
-		bus:   bus,
+		store:  store,
+		bus:    bus,
+		events: state.NewEventWriter(store, state.SourceProjectCtrl),
 	}
 }
 
 // ── START ────────────────────────────────────────────────────────────────────
 
 // StartProject sets desired_state = running for every service in a project.
-// The daemon reconciler picks this up and starts each service.
-// Returns the number of services that were queued to start.
+// Returns the number of services queued to start.
 func (c *ProjectController) StartProject(projectID string) (int, error) {
 	project, err := c.store.GetProject(projectID)
 	if err != nil {
@@ -79,7 +79,7 @@ func (c *ProjectController) StartProject(projectID string) (int, error) {
 		return 0, fmt.Errorf("get services for project %s: %w", projectID, err)
 	}
 	if len(services) == 0 {
-		return 0, fmt.Errorf("no services registered for project %q", projectID)
+		return 0, fmt.Errorf("no services registered under project %q", projectID)
 	}
 
 	traceID := generateTraceID("start", projectID)
@@ -87,31 +87,21 @@ func (c *ProjectController) StartProject(projectID string) (int, error) {
 
 	for _, svc := range services {
 		if svc.DesiredState == state.StateRunning {
-			continue // already desired running — skip
+			continue
 		}
 
 		if err := c.store.SetDesiredState(svc.ID, state.StateRunning); err != nil {
 			return started, fmt.Errorf("set desired state for %s: %w", svc.ID, err)
 		}
 
-		c.bus.Publish(
-			eventbus.TopicStateChanged,
-			svc.ID,
-			eventbus.StateChangedPayload{
-				ServiceID: svc.ID,
-				From:      string(svc.DesiredState),
-				To:        string(state.StateRunning),
-			},
-		)
+		c.bus.Publish(eventbus.TopicStateChanged, svc.ID, eventbus.StateChangedPayload{
+			ServiceID: svc.ID,
+			From:      string(svc.DesiredState),
+			To:        string(state.StateRunning),
+		})
 
-		if err := c.store.AppendEvent(
-			svc.ID,
-			state.EventStateChanged,
-			state.SourceProjectCtrl,
-			traceID,
-			fmt.Sprintf(`{"action":"start","project":"%s","service":"%s"}`, projectID, svc.ID),
-		); err != nil {
-			return started, fmt.Errorf("append start event for %s: %w", svc.ID, err)
+		if err := c.events.StateChanged(svc.ID, traceID, string(svc.DesiredState), string(state.StateRunning)); err != nil {
+			return started, fmt.Errorf("write state changed event for %s: %w", svc.ID, err)
 		}
 
 		started++
@@ -123,8 +113,7 @@ func (c *ProjectController) StartProject(projectID string) (int, error) {
 // ── STOP ─────────────────────────────────────────────────────────────────────
 
 // StopProject sets desired_state = stopped for every service in a project.
-// The daemon reconciler picks this up and stops each service gracefully.
-// Returns the number of services that were queued to stop.
+// Returns the number of services queued to stop.
 func (c *ProjectController) StopProject(projectID string) (int, error) {
 	project, err := c.store.GetProject(projectID)
 	if err != nil {
@@ -144,31 +133,21 @@ func (c *ProjectController) StopProject(projectID string) (int, error) {
 
 	for _, svc := range services {
 		if svc.DesiredState == state.StateStopped {
-			continue // already desired stopped — skip
+			continue
 		}
 
 		if err := c.store.SetDesiredState(svc.ID, state.StateStopped); err != nil {
 			return stopped, fmt.Errorf("set desired state for %s: %w", svc.ID, err)
 		}
 
-		c.bus.Publish(
-			eventbus.TopicStateChanged,
-			svc.ID,
-			eventbus.StateChangedPayload{
-				ServiceID: svc.ID,
-				From:      string(svc.DesiredState),
-				To:        string(state.StateStopped),
-			},
-		)
+		c.bus.Publish(eventbus.TopicStateChanged, svc.ID, eventbus.StateChangedPayload{
+			ServiceID: svc.ID,
+			From:      string(svc.DesiredState),
+			To:        string(state.StateStopped),
+		})
 
-		if err := c.store.AppendEvent(
-			svc.ID,
-			state.EventStateChanged,
-			state.SourceProjectCtrl,
-			traceID,
-			fmt.Sprintf(`{"action":"stop","project":"%s","service":"%s"}`, projectID, svc.ID),
-		); err != nil {
-			return stopped, fmt.Errorf("append stop event for %s: %w", svc.ID, err)
+		if err := c.events.StateChanged(svc.ID, traceID, string(svc.DesiredState), string(state.StateStopped)); err != nil {
+			return stopped, fmt.Errorf("write state changed event for %s: %w", svc.ID, err)
 		}
 
 		stopped++
@@ -197,7 +176,7 @@ func (c *ProjectController) GetProjectStatus(projectID string) (*ProjectStatus, 
 	status := &ProjectStatus{
 		ProjectID:   project.ID,
 		ProjectName: project.Name,
-		StartedAt:   time.Now().UTC(),
+		SnapshotAt:  time.Now().UTC(),
 		Services:    make([]*ServiceStatus, 0, len(services)),
 	}
 
@@ -225,8 +204,6 @@ func (c *ProjectController) GetProjectStatus(projectID string) (*ProjectStatus, 
 	return status, nil
 }
 
-// ── ALL PROJECTS STATUS ───────────────────────────────────────────────────────
-
 // GetAllProjectsStatus returns health snapshots for every registered project.
 func (c *ProjectController) GetAllProjectsStatus() ([]*ProjectStatus, error) {
 	projects, err := c.store.GetAllProjects()
@@ -244,52 +221,6 @@ func (c *ProjectController) GetAllProjectsStatus() ([]*ProjectStatus, error) {
 	}
 
 	return statuses, nil
-}
-
-// ── RENDER ───────────────────────────────────────────────────────────────────
-
-// RenderStatus returns a formatted string ready to print to the terminal.
-// Example output:
-//
-//	PROJECT: ums
-//	  identity-api    running   running   docker   ✓
-//	  gateway         running   stopped   process  ✗  (2 recent failures)
-func (c *ProjectController) RenderStatus(status *ProjectStatus) string {
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("\nPROJECT: %s\n", strings.ToUpper(status.ProjectID)))
-	sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %-10s %s\n",
-		"SERVICE", "DESIRED", "ACTUAL", "PROVIDER", "HEALTH"))
-	sb.WriteString(strings.Repeat("─", 78) + "\n")
-
-	for _, svc := range status.Services {
-		health := "✓"
-		if !svc.IsHealthy {
-			health = "✗"
-		}
-		if svc.FailCount > 0 {
-			health += fmt.Sprintf("  (%d failures)", svc.FailCount)
-		}
-
-		sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %-10s %s\n",
-			svc.Name,
-			string(svc.DesiredState),
-			string(svc.ActualState),
-			string(svc.Provider),
-			health,
-		))
-	}
-
-	total := len(status.Services)
-	healthy := 0
-	for _, svc := range status.Services {
-		if svc.IsHealthy {
-			healthy++
-		}
-	}
-	sb.WriteString(fmt.Sprintf("\n%d/%d services healthy\n", healthy, total))
-
-	return sb.String()
 }
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
