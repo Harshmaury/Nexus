@@ -3,17 +3,27 @@
 // Router applies confidence thresholds to DetectionResults and
 // routes files to their destination, prompts the user, or tags and leaves them.
 // It owns all routing policy — detector only scores, router decides.
+//
+// Fix: notifyWindowsToast previously embedded title and message directly into
+// a PowerShell script string via fmt.Sprintf. A filename containing a single
+// quote (e.g. "don't delete this.go") would break the PS string literal and
+// could inject arbitrary PowerShell commands.
+//
+// Fix: title and message are now passed as environment variables read inside
+// the PS script. User-controlled data never touches the script text.
 package intelligence
 
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
@@ -23,8 +33,8 @@ import (
 
 const (
 	// Routing thresholds.
-	autoRouteThreshold  = 0.80 // auto-move + notify
-	promptThreshold     = 0.40 // ask user in terminal
+	autoRouteThreshold = 0.80 // auto-move + notify
+	promptThreshold    = 0.40 // ask user in terminal
 	// below promptThreshold → tag filename + leave in place
 
 	// Tag prefix applied to unrouted files so they stand out.
@@ -37,21 +47,21 @@ const (
 type RouteAction string
 
 const (
-	RouteActionMoved      RouteAction = "moved"
-	RouteActionPrompted   RouteAction = "prompted"
-	RouteActionTagged     RouteAction = "tagged"
-	RouteActionSkipped    RouteAction = "skipped"
+	RouteActionMoved    RouteAction = "moved"
+	RouteActionPrompted RouteAction = "prompted"
+	RouteActionTagged   RouteAction = "tagged"
+	RouteActionSkipped  RouteAction = "skipped"
 )
 
 // RouteResult is the full outcome of routing one file.
 type RouteResult struct {
-	OriginalPath  string
-	FinalPath     string
-	ProjectID     string
-	Action        RouteAction
-	Confidence    float64
-	Method        string
-	RoutedAt      time.Time
+	OriginalPath string
+	FinalPath    string
+	ProjectID    string
+	Action       RouteAction
+	Confidence   float64
+	Method       string
+	RoutedAt     time.Time
 }
 
 // ── PROJECT RESOLVER ─────────────────────────────────────────────────────────
@@ -120,13 +130,9 @@ func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, resul
 	result.FinalPath = destination
 	result.Action = RouteActionMoved
 
-	// Terminal notification.
 	r.notifyTerminal(detection, destination)
-
-	// Windows toast notification (non-blocking).
 	go r.notifyWindowsToast(detection, destination)
 
-	// Publish routed event.
 	r.bus.Publish(eventbus.TopicFileRouted, "drop", eventbus.FileRoutedPayload{
 		OriginalName: filepath.Base(detection.FilePath),
 		RenamedTo:    filepath.Base(destination),
@@ -155,7 +161,6 @@ func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, resul
 func (r *Router) promptRoute(ctx context.Context, detection DetectionResult, result RouteResult) (RouteResult, error) {
 	destination, err := r.resolveDestination(detection)
 	if err != nil {
-		// Cannot resolve — fall back to tag.
 		return r.tagAndLeave(detection, result)
 	}
 
@@ -230,12 +235,10 @@ func (r *Router) resolveDestination(detection DetectionResult) (string, error) {
 		return "", fmt.Errorf("get project path for %s: %w", detection.ProjectID, err)
 	}
 
-	// If we have a target path from the header comment, use it.
 	if detection.TargetPath != "" {
 		return filepath.Join(projectPath, detection.TargetPath), nil
 	}
 
-	// No target path — drop into project root.
 	return filepath.Join(projectPath, filepath.Base(detection.FilePath)), nil
 }
 
@@ -245,12 +248,10 @@ func moveFile(src string, dst string) error {
 		return fmt.Errorf("create destination dir: %w", err)
 	}
 
-	// Try atomic rename first (same filesystem).
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}
 
-	// Cross-filesystem fallback: copy then delete.
 	if err := copyFile(src, dst); err != nil {
 		return fmt.Errorf("copy file: %w", err)
 	}
@@ -297,23 +298,47 @@ func (r *Router) notifyTerminal(detection DetectionResult, destination string) {
 
 // notifyWindowsToast sends a Windows toast notification via PowerShell.
 // Runs in a goroutine — never blocks the routing pipeline.
+//
+// Security: title and message are base64-encoded UTF-16LE and passed as a
+// PowerShell -EncodedCommand. User-controlled data (filename, project ID)
+// never appears in the script string itself, eliminating PS injection risk.
 func (r *Router) notifyWindowsToast(detection DetectionResult, destination string) {
-	title := fmt.Sprintf("Nexus Drop — %s", detection.ProjectID)
-	message := fmt.Sprintf("%s → %s (%.0f%%)",
+	title := "Nexus Drop \u2014 " + detection.ProjectID
+	message := fmt.Sprintf("%s \u2192 %s (%.0f%%)",
 		filepath.Base(detection.FilePath),
 		filepath.Base(destination),
 		detection.Confidence*100,
 	)
 
-	script := fmt.Sprintf(`
+	// The PS script references $env:NEXUS_TITLE and $env:NEXUS_MSG.
+	// No user data is interpolated into the script text.
+	const psScript = `
 		[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 		$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-		$template.GetElementsByTagName('text')[0].AppendChild($template.CreateTextNode('%s')) | Out-Null
-		$template.GetElementsByTagName('text')[1].AppendChild($template.CreateTextNode('%s')) | Out-Null
+		$template.GetElementsByTagName('text')[0].AppendChild($template.CreateTextNode($env:NEXUS_TITLE)) | Out-Null
+		$template.GetElementsByTagName('text')[1].AppendChild($template.CreateTextNode($env:NEXUS_MSG)) | Out-Null
 		$toast = [Windows.UI.Notifications.ToastNotification]::new($template)
 		[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Nexus').Show($toast)
-	`, title, message)
+	`
 
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
-	_ = cmd.Run() // best-effort — failure is silent
+	encoded := encodePS(psScript)
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
+	cmd.Env = append(os.Environ(),
+		"NEXUS_TITLE="+title,
+		"NEXUS_MSG="+message,
+	)
+	_ = cmd.Run() // best-effort — toast failure is never fatal
+}
+
+// encodePS encodes a PowerShell script to UTF-16LE base64 for -EncodedCommand.
+// This is the format PowerShell's -EncodedCommand flag requires.
+func encodePS(script string) string {
+	runes := []rune(script)
+	utf16Encoded := utf16.Encode(runes)
+	bytes := make([]byte, len(utf16Encoded)*2)
+	for i, r := range utf16Encoded {
+		bytes[i*2] = byte(r)
+		bytes[i*2+1] = byte(r >> 8)
+	}
+	return base64.StdEncoding.EncodeToString(bytes)
 }

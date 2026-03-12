@@ -113,6 +113,7 @@ type DownloadLog struct {
 	Source       string
 	Destination  string
 	Method       string
+	Action       string    // moved | prompted | tagged | skipped
 	Confidence   float64
 	DownloadedAt time.Time
 }
@@ -462,10 +463,13 @@ func (s *Store) GetAllProjects() ([]*Project, error) {
 
 // LogDownload records a file processed by Nexus Drop.
 func (s *Store) LogDownload(d *DownloadLog) error {
+	if d.DownloadedAt.IsZero() {
+		d.DownloadedAt = time.Now().UTC()
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO download_log (original_name, renamed_to, project, source, destination, method, confidence, downloaded_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, d.OriginalName, d.RenamedTo, d.Project, d.Source, d.Destination, d.Method, d.Confidence, time.Now().UTC())
+		INSERT INTO download_log (original_name, renamed_to, project, source, destination, method, action, confidence, downloaded_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, d.OriginalName, d.RenamedTo, d.Project, d.Source, d.Destination, d.Method, d.Action, d.Confidence, d.DownloadedAt)
 	if err != nil {
 		return fmt.Errorf("log download: %w", err)
 	}
@@ -475,7 +479,7 @@ func (s *Store) LogDownload(d *DownloadLog) error {
 // GetRecentDownloads returns the N most recent download log entries.
 func (s *Store) GetRecentDownloads(limit int) ([]*DownloadLog, error) {
 	rows, err := s.db.Query(
-		`SELECT id, original_name, renamed_to, project, source, destination, method, confidence, downloaded_at
+		`SELECT id, original_name, renamed_to, project, source, destination, method, action, confidence, downloaded_at
 		 FROM download_log ORDER BY downloaded_at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -486,7 +490,7 @@ func (s *Store) GetRecentDownloads(limit int) ([]*DownloadLog, error) {
 	var logs []*DownloadLog
 	for rows.Next() {
 		d := &DownloadLog{}
-		if err := rows.Scan(&d.ID, &d.OriginalName, &d.RenamedTo, &d.Project, &d.Source, &d.Destination, &d.Method, &d.Confidence, &d.DownloadedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.OriginalName, &d.RenamedTo, &d.Project, &d.Source, &d.Destination, &d.Method, &d.Action, &d.Confidence, &d.DownloadedAt); err != nil {
 			return nil, fmt.Errorf("scan download log: %w", err)
 		}
 		logs = append(logs, d)
@@ -552,6 +556,7 @@ func (s *Store) migrate() error {
 			source        TEXT NOT NULL DEFAULT '',
 			destination   TEXT NOT NULL DEFAULT '',
 			method        TEXT NOT NULL DEFAULT '',
+			action        TEXT NOT NULL DEFAULT '',
 			confidence    REAL NOT NULL DEFAULT 0.0,
 			downloaded_at DATETIME NOT NULL
 		)`,

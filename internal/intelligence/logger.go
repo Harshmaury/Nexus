@@ -54,6 +54,8 @@ func (l *DropLogger) Log(entry DropLogEntry) error {
 		Source:       entry.Source,
 		Destination:  entry.Destination,
 		Method:       entry.Method,
+		Action:       entry.Action,
 		Confidence:   entry.Confidence,
+		DownloadedAt: entry.DroppedAt,
 	})
 }
