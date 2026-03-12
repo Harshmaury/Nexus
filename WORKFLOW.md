@@ -88,7 +88,7 @@ language: Go 1.24
 type:     platform-daemon
 purpose:  Controls ALL other projects. Never coupled to them.
 github:   https://github.com/Harshmaury/Nexus
-status:   IN DEVELOPMENT — Phase 1 (state store done)
+status:   IN DEVELOPMENT — Phase 1+2 complete, refactor done. Next: Docker provider
 start:    go run ./cmd/engxd/
 build:    go build -o ~/bin/engxd ./cmd/engxd/
 test:     go test ./...
@@ -119,34 +119,53 @@ warning:  Do not stop without saving state
 
 ## [NEXUS_BUILD_STATUS]
 # UPDATE THIS SECTION: after completing each phase component
+# Last verified: 2026-03-12 at commit 885a15d — go build PASS
 
-Phase 1 — Daemon Core:
-  [x] 01 internal/state/db.go          → SQLite state store ✅ DONE
-  [ ] 02 internal/eventbus/bus.go       → Event pub/sub
-  [ ] 03 pkg/runtime/interface.go       → Provider interface
-  [ ] 03 pkg/runtime/docker.go          → Docker provider
-  [ ] 03 pkg/runtime/k8s.go             → K8s provider
-  [ ] 04 internal/daemon/engine.go      → Reconciler loop
-  [ ] 05 internal/controllers/health.go → Health controller
-  [ ] 06 internal/controllers/recovery.go → Recovery + back-off
-  [ ] 07 internal/daemon/server.go      → Unix socket server
-  [ ] 08 cmd/engxd/main.go              → Daemon entry point
-  [ ] 08 cmd/engx/main.go               → CLI entry point
+Phase 1 — Daemon Core: ✅ COMPLETE
+  [x] 01 internal/state/db.go                    → SQLite state store
+  [x] 02 internal/eventbus/bus.go                → Event pub/sub
+  [x] 03 pkg/runtime/provider.go                 → Provider interface
+  [x] 04 internal/daemon/engine.go               → Reconciler loop
+  [x] 05 internal/controllers/health.go          → Health controller
+  [x] 06 internal/controllers/recovery.go        → Recovery + back-off
+  [x] 07 internal/daemon/server.go               → Unix socket server
+  [x] 08 cmd/engxd/main.go                       → Daemon entry point
+  [x] 08 cmd/engx/main.go                        → CLI entry point
 
-Phase 2 — Drop Intelligence:
-  [ ] internal/watcher/watcher.go       → inotify file watcher
-  [ ] internal/intelligence/detector.go → 3-layer detection
-  [ ] internal/intelligence/renamer.go  → Smart rename
-  [ ] internal/intelligence/router.go   → Confidence router
-  [ ] internal/intelligence/logger.go   → Download audit log
+Phase 1 — Refactor: ✅ COMPLETE (885a15d)
+  [x] internal/config/policy.go                  → Single source for all policy constants
+  [x] internal/config/env.go                     → ExpandHome, EnvOrDefault helpers
+  [x] internal/daemon/engine.go                  → slog, logged errors, imports config
+  [x] internal/controllers/recovery.go           → context.Context Run(), imports config
+  [x] internal/controllers/project_controller.go → imports config, no local constants
+  [x] cmd/engxd/main.go                          → sync.WaitGroup shutdown, log/slog
+  [x] cmd/engx/main.go                           → imports config, no local duplicates
 
-Phase 3 — CLI Commands:
-  [ ] engx start / stop / status / logs / deploy / doctor
+Phase 2 — Drop Intelligence: ✅ COMPLETE
+  [x] internal/watcher/watcher.go                → inotify file watcher
+  [x] internal/intelligence/detector.go          → 4-layer weighted detection
+  [x] internal/intelligence/renamer.go           → canonical rename
+  [x] internal/intelligence/router.go            → confidence router
+  [x] internal/intelligence/logger.go            → download audit log
+  [x] internal/intelligence/pipeline.go          → full pipeline coordinator
 
-Phase 4 — Plugin System:
-  [ ] plugins/docker/
-  [ ] plugins/kubernetes/
-  [ ] plugins/health/
+Phase 2 — Known Bugs (not yet fixed):
+  [ ] internal/intelligence/logger.go:52         → LogDownload signature mismatch with state.Store
+  [ ] internal/intelligence/renamer.go           → sanitiseSegment compiles regex on every call
+  [ ] internal/intelligence/router.go            → PowerShell injection via fmt.Sprintf
+
+Phase 3 — Providers (NEXT):
+  [ ] pkg/runtime/docker/provider.go             → Docker SDK implementation
+  [ ] pkg/runtime/process/provider.go            → os/exec for local processes
+  [ ] pkg/runtime/k8s/provider.go                → client-go for Minikube
+
+Phase 4 — CLI Commands:
+  [ ] engx start / stop / status / logs / events / doctor
+
+Phase 5 — Tests:
+  [ ] internal/intelligence/detector_test.go     → table-driven unit tests
+  [ ] internal/state/db_test.go                  → store integration tests
+  [ ] internal/daemon/engine_test.go             → reconciler unit tests
 
 ---
 
@@ -279,3 +298,4 @@ Steps (3 minutes):
 2026-03-12 | [BUILD]     | Phase 1+2 complete — all daemon core + drop intelligence done
 2026-03-12 | [BUILD]     | Refactor complete — config pkg, WaitGroup shutdown, slog, dedup
 2026-03-12 | [SESSION]   | Added verify.sh + SESSION_KEY system — token-efficient AI sessions
+2026-03-12 | [BUILD]     | WORKFLOW build status corrected to reflect actual repo state at 885a15d
