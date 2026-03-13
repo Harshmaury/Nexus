@@ -5,25 +5,16 @@
 // This is where all restart policy lives — the reconciler and health controller
 // are policy-free. Only RecoveryController makes recovery decisions.
 //
-// Phase 7.3 change — back-off state is now persisted to the store:
-//
-//   Previously: RecoveryController held a pending map[string]time.Time in memory.
-//   Problem:    If the daemon was killed during a back-off window, the map was lost.
-//               On restart the service would either restart immediately (skipping
-//               the delay) or stall indefinitely.
-//
-//   Now:        execute(BackOff) calls store.SetRestartAfter(id, restartAt).
-//               processPending() calls store.GetServicesReadyToRestart() and
-//               then store.ClearRestartAfter(id) after re-queueing.
-//               Daemon restarts during a back-off window honour the delay correctly.
-//
-//   Removed:    pending map[string]time.Time
-//   Removed:    sync.Mutex (no longer needed — store is the source of truth)
+// Changes from previous version:
+//   - Run() now accepts context.Context (consistent with Engine and HealthController)
+//   - Back-off schedule and thresholds imported from internal/config (single source)
+//   - Duplicate local constants removed
 package controllers
 
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Harshmaury/Nexus/internal/config"
@@ -56,14 +47,15 @@ type RecoveryDecision struct {
 
 // RecoveryController subscribes to crash events and enforces restart policy.
 // Policy is sourced entirely from internal/config — no magic numbers here.
-// Back-off state is persisted in the store (restart_after column) so that
-// daemon restarts during a back-off window still honour the delay.
 type RecoveryController struct {
 	store     *state.Store
 	bus       *eventbus.Bus
 	events    *state.EventWriter
 	subID     string
 	decisions chan RecoveryDecision
+
+	mu      sync.Mutex
+	pending map[string]time.Time // serviceID → time when restart is allowed
 }
 
 // NewRecoveryController creates a RecoveryController and subscribes to the bus.
@@ -73,6 +65,7 @@ func NewRecoveryController(store *state.Store, bus *eventbus.Bus) *RecoveryContr
 		bus:       bus,
 		events:    state.NewEventWriter(store, state.SourceRecovery),
 		decisions: make(chan RecoveryDecision, 20),
+		pending:   make(map[string]time.Time),
 	}
 	rc.subID = bus.Subscribe(eventbus.TopicRecoveryNeeded, rc.onRecoveryNeeded)
 	return rc
@@ -81,6 +74,7 @@ func NewRecoveryController(store *state.Store, bus *eventbus.Bus) *RecoveryContr
 // ── RUN ──────────────────────────────────────────────────────────────────────
 
 // Run processes recovery decisions and blocks until ctx is cancelled.
+// Now accepts context.Context — consistent with Engine.Run and HealthController.Run.
 func (rc *RecoveryController) Run(ctx context.Context) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -191,14 +185,9 @@ func (rc *RecoveryController) execute(svc *state.Service, decision RecoveryDecis
 
 	case RecoveryActionBackOff:
 		restartAt := decision.DecidedAt.Add(decision.BackOffDelay)
-
-		// Persist to DB — survives daemon restarts during the back-off window.
-		if err := rc.store.SetRestartAfter(svc.ID, restartAt); err != nil {
-			_ = rc.events.SystemAlert("warn",
-				fmt.Sprintf("recovery: failed to persist restart_after for %s: %v", svc.ID, err),
-				map[string]string{"service_id": svc.ID},
-			)
-		}
+		rc.mu.Lock()
+		rc.pending[svc.ID] = restartAt
+		rc.mu.Unlock()
 
 		_ = rc.events.StateChanged(svc.ID, traceID,
 			string(svc.ActualState), string(state.StateRecovering))
@@ -226,37 +215,23 @@ func (rc *RecoveryController) execute(svc *state.Service, decision RecoveryDecis
 
 // ── PENDING RESTARTS ─────────────────────────────────────────────────────────
 
-// processPending queries the store for services whose back-off window has elapsed
-// and re-queues them for startup by setting desired_state = running.
-//
-// Previously: iterated an in-memory map — lost on daemon kill.
-// Now:        queries store.GetServicesReadyToRestart() — survives restarts.
 func (rc *RecoveryController) processPending() {
-	ready, err := rc.store.GetServicesReadyToRestart()
-	if err != nil {
-		_ = rc.events.SystemAlert("warn",
-			fmt.Sprintf("recovery: failed to query services ready to restart: %v", err),
-			map[string]string{"source": "recovery-controller"},
-		)
-		return
-	}
+	now := time.Now().UTC()
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 
-	for _, svc := range ready {
-		if err := rc.store.SetDesiredState(svc.ID, state.StateRunning); err != nil {
+	for serviceID, restartAt := range rc.pending {
+		if now.Before(restartAt) {
+			continue
+		}
+		if err := rc.store.SetDesiredState(serviceID, state.StateRunning); err != nil {
 			_ = rc.events.SystemAlert("warn",
-				fmt.Sprintf("recovery: failed to set desired state for %s: %v", svc.ID, err),
-				map[string]string{"service_id": svc.ID},
+				fmt.Sprintf("recovery: failed to set desired state for %s: %v", serviceID, err),
+				map[string]string{"service_id": serviceID},
 			)
 			continue
 		}
-
-		// Clear the restart_after so it is not picked up again next tick.
-		if err := rc.store.ClearRestartAfter(svc.ID); err != nil {
-			_ = rc.events.SystemAlert("warn",
-				fmt.Sprintf("recovery: failed to clear restart_after for %s: %v", svc.ID, err),
-				map[string]string{"service_id": svc.ID},
-			)
-		}
+		delete(rc.pending, serviceID)
 	}
 }
 

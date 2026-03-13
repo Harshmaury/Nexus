@@ -4,34 +4,24 @@
 // routes files to their destination, prompts the user, or tags and leaves them.
 // It owns all routing policy — detector only scores, router decides.
 //
-// Phase 7.6 change — removed blocking stdin read from promptRoute:
+// Fix: notifyWindowsToast previously embedded title and message directly into
+// a PowerShell script string via fmt.Sprintf. A filename containing a single
+// quote (e.g. "don't delete this.go") would break the PS string literal and
+// could inject arbitrary PowerShell commands.
 //
-//   Previously: promptRoute() called bufio.NewReader(os.Stdin).ReadString('\n').
-//   Problem:    The daemon runs in the background (stdin = /dev/null). The read
-//               blocks forever, permanently hanging that goroutine. Every file
-//               in the 0.40–0.79 confidence range silently disappeared.
-//
-//   Now:        promptRoute() publishes TopicDropPendingApproval to the event bus
-//               with full routing details and returns RouteActionPrompted.
-//               The CLI (engx) subscribes to this topic (or polls the socket)
-//               and presents the confirmation interactively.
-//               The intelligence pipeline is non-blocking.
-//
-//   New CLI commands to implement (Phase 8): engx drop approve <file>, engx drop reject <file>
-//   These send CmdDropApprove / CmdDropReject commands to the Unix socket server.
-//
-// Security note on notifyWindowsToast:
-//   Title and message are base64-encoded UTF-16LE and passed as -EncodedCommand.
-//   User-controlled data (filename, project ID) never appears in the script string.
+// Fix: title and message are now passed as environment variables read inside
+// the PS script. User-controlled data never touches the script text.
 package intelligence
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 	"unicode/utf16"
 
@@ -42,10 +32,12 @@ import (
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 
 const (
+	// Routing thresholds.
 	autoRouteThreshold = 0.80 // auto-move + notify
-	promptThreshold    = 0.40 // publish approval event; CLI handles it
+	promptThreshold    = 0.40 // ask user in terminal
 	// below promptThreshold → tag filename + leave in place
 
+	// Tag prefix applied to unrouted files so they stand out.
 	quarantineTag = "UNROUTED__"
 )
 
@@ -56,7 +48,7 @@ type RouteAction string
 
 const (
 	RouteActionMoved    RouteAction = "moved"
-	RouteActionPrompted RouteAction = "prompted" // pending CLI approval via bus
+	RouteActionPrompted RouteAction = "prompted"
 	RouteActionTagged   RouteAction = "tagged"
 	RouteActionSkipped  RouteAction = "skipped"
 )
@@ -75,6 +67,7 @@ type RouteResult struct {
 // ── PROJECT RESOLVER ─────────────────────────────────────────────────────────
 
 // ProjectResolver provides the root path for a registered project.
+// Implemented by the state store wrapper in the pipeline.
 type ProjectResolver interface {
 	GetProjectPath(projectID string) (string, error)
 }
@@ -123,6 +116,7 @@ func (r *Router) Route(ctx context.Context, detection DetectionResult) (RouteRes
 
 // ── AUTO ROUTE ───────────────────────────────────────────────────────────────
 
+// autoRoute moves the file to its destination and sends notifications.
 func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, result RouteResult) (RouteResult, error) {
 	destination, err := r.resolveDestination(detection)
 	if err != nil {
@@ -163,37 +157,50 @@ func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, resul
 
 // ── PROMPT ROUTE ─────────────────────────────────────────────────────────────
 
-// promptRoute handles the 0.40–0.79 confidence range.
-//
-// Previously: blocked on bufio.NewReader(os.Stdin).ReadString('\n') — which hangs
-// forever when the daemon's stdin is /dev/null (its normal operating mode).
-//
-// Now: publishes TopicDropPendingApproval to the event bus. The CLI engx watches
-// the socket for this event and presents the interactive approval prompt to the user.
-// The pipeline returns immediately with RouteActionPrompted.
+// promptRoute asks the user in the terminal to confirm routing.
 func (r *Router) promptRoute(ctx context.Context, detection DetectionResult, result RouteResult) (RouteResult, error) {
 	destination, err := r.resolveDestination(detection)
 	if err != nil {
-		// Cannot resolve destination — fall back to tag-and-leave.
 		return r.tagAndLeave(detection, result)
 	}
 
-	// Publish the pending approval event. The CLI handles the interactive prompt.
-	r.bus.Publish(eventbus.TopicDropPendingApproval, "drop", eventbus.DropApprovalPayload{
-		FilePath:    detection.FilePath,
-		ProjectID:   detection.ProjectID,
-		Destination: destination,
-		Confidence:  detection.Confidence,
-		Method:      detection.Method,
-	})
+	fmt.Printf("\n\033[33m[NEXUS DROP]\033[0m New file detected\n")
+	fmt.Printf("  File:        %s\n", filepath.Base(detection.FilePath))
+	fmt.Printf("  Project:     %s\n", detection.ProjectID)
+	fmt.Printf("  Destination: %s\n", destination)
+	fmt.Printf("  Confidence:  %.0f%%  (%s)\n", detection.Confidence*100, detection.Method)
+	fmt.Printf("  Move it? [Y/n]: ")
 
-	result.FinalPath = destination // where it *will* go, pending approval
-	result.Action = RouteActionPrompted
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+
+	if input == "" || input == "y" || input == "yes" {
+		if err := moveFile(detection.FilePath, destination); err != nil {
+			return result, fmt.Errorf("move file: %w", err)
+		}
+		result.FinalPath = destination
+		result.Action = RouteActionMoved
+		fmt.Printf("  \033[32m✓ Moved\033[0m → %s\n\n", destination)
+
+		r.bus.Publish(eventbus.TopicFileRouted, "drop", eventbus.FileRoutedPayload{
+			OriginalName: filepath.Base(detection.FilePath),
+			Project:      detection.ProjectID,
+			Destination:  destination,
+			Method:       detection.Method,
+			Confidence:   detection.Confidence,
+		})
+	} else {
+		result.Action = RouteActionSkipped
+		fmt.Printf("  Skipped — file left in place\n\n")
+	}
+
 	return result, nil
 }
 
 // ── TAG AND LEAVE ────────────────────────────────────────────────────────────
 
+// tagAndLeave renames the file with UNROUTED__ prefix and leaves it in place.
 func (r *Router) tagAndLeave(detection DetectionResult, result RouteResult) (RouteResult, error) {
 	dir := filepath.Dir(detection.FilePath)
 	base := filepath.Base(detection.FilePath)
@@ -217,6 +224,7 @@ func (r *Router) tagAndLeave(detection DetectionResult, result RouteResult) (Rou
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
+// resolveDestination builds the full destination path for a file.
 func (r *Router) resolveDestination(detection DetectionResult) (string, error) {
 	if detection.ProjectID == "" {
 		return "", fmt.Errorf("no project detected")
@@ -234,6 +242,7 @@ func (r *Router) resolveDestination(detection DetectionResult) (string, error) {
 	return filepath.Join(projectPath, filepath.Base(detection.FilePath)), nil
 }
 
+// moveFile moves src to dst, creating destination directories as needed.
 func moveFile(src string, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
@@ -249,6 +258,7 @@ func moveFile(src string, dst string) error {
 	return os.Remove(src)
 }
 
+// copyFile copies src to dst byte-for-byte.
 func copyFile(src string, dst string) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
@@ -277,6 +287,7 @@ func copyFile(src string, dst string) error {
 	return nil
 }
 
+// notifyTerminal prints a coloured notification to stdout.
 func (r *Router) notifyTerminal(detection DetectionResult, destination string) {
 	fmt.Printf("\n\033[32m[NEXUS DROP]\033[0m Auto-routed\n")
 	fmt.Printf("  File:        %s\n", filepath.Base(detection.FilePath))
@@ -285,6 +296,12 @@ func (r *Router) notifyTerminal(detection DetectionResult, destination string) {
 	fmt.Printf("  Confidence:  %.0f%%  (%s)\n\n", detection.Confidence*100, detection.Method)
 }
 
+// notifyWindowsToast sends a Windows toast notification via PowerShell.
+// Runs in a goroutine — never blocks the routing pipeline.
+//
+// Security: title and message are base64-encoded UTF-16LE and passed as a
+// PowerShell -EncodedCommand. User-controlled data (filename, project ID)
+// never appears in the script string itself, eliminating PS injection risk.
 func (r *Router) notifyWindowsToast(detection DetectionResult, destination string) {
 	title := "Nexus Drop \u2014 " + detection.ProjectID
 	message := fmt.Sprintf("%s \u2192 %s (%.0f%%)",
@@ -293,6 +310,8 @@ func (r *Router) notifyWindowsToast(detection DetectionResult, destination strin
 		detection.Confidence*100,
 	)
 
+	// The PS script references $env:NEXUS_TITLE and $env:NEXUS_MSG.
+	// No user data is interpolated into the script text.
 	const psScript = `
 		[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 		$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
@@ -308,9 +327,11 @@ func (r *Router) notifyWindowsToast(detection DetectionResult, destination strin
 		"NEXUS_TITLE="+title,
 		"NEXUS_MSG="+message,
 	)
-	_ = cmd.Run()
+	_ = cmd.Run() // best-effort — toast failure is never fatal
 }
 
+// encodePS encodes a PowerShell script to UTF-16LE base64 for -EncodedCommand.
+// This is the format PowerShell's -EncodedCommand flag requires.
 func encodePS(script string) string {
 	runes := []rune(script)
 	utf16Encoded := utf16.Encode(runes)

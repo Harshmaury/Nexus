@@ -4,23 +4,13 @@
 // It wires every component together, starts them as goroutines,
 // and shuts down cleanly on SIGINT or SIGTERM.
 //
-// Phase 7 changes:
-//   - Removed local envOrDefault, durationEnvOrDefault, expandHome, shutdownTimeout.
-//     All four now come from internal/config — the single source of truth.
-//   - Fixed recoveryCtrl.Run(ctx.Done()) → recoveryCtrl.Run(ctx) to match the
-//     Run(ctx context.Context) error signature. The previous call passed a
-//     <-chan struct{} which would not compile (and would never error-propagate).
-//   - Added sync.WaitGroup so shutdown waits for all goroutines to exit before
-//     the deferred store.Close() fires. Prevents in-flight DB writes being cut off.
-//
 // Component startup order:
 //  1. State store (SQLite)
 //  2. Event bus
-//  3. Providers
-//  4. Controllers (project, health, recovery)
-//  5. Reconciler engine
-//  6. Unix socket server
-//  7. Result logger (reads engine + health + recovery channels)
+//  3. Controllers (project, health, recovery)
+//  4. Reconciler engine
+//  5. Unix socket server
+//  6. Result logger (reads engine + health channels)
 package main
 
 import (
@@ -29,10 +19,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
+	"time"
 
-	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
@@ -43,12 +32,17 @@ import (
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const daemonVersion = "0.1.0"
+const (
+	daemonVersion    = "0.1.0"
+	defaultDBPath    = "~/.nexus/nexus.db"
+	shutdownTimeout  = 10 * time.Second
+)
 
 // ── ENTRY POINT ──────────────────────────────────────────────────────────────
 
 func main() {
 	logger := log.New(os.Stdout, "[engxd] ", log.LstdFlags)
+
 	logger.Printf("Nexus daemon v%s starting", daemonVersion)
 
 	if err := run(logger); err != nil {
@@ -62,15 +56,17 @@ func main() {
 
 func run(logger *log.Logger) error {
 	// ── 1. STATE STORE ───────────────────────────────────────────────────────
-	// config.EnvOrDefault and config.ExpandHome replace the former local helpers.
-	dbPath := config.ExpandHome(config.EnvOrDefault("NEXUS_DB_PATH", config.DefaultDBPath))
+	dbPath := expandHome(envOrDefault("NEXUS_DB_PATH", defaultDBPath))
 	logger.Printf("opening state store: %s", dbPath)
 
 	store, err := state.New(dbPath)
 	if err != nil {
 		return fmt.Errorf("open state store: %w", err)
 	}
-	// store.Close is deferred after wg.Wait() — see shutdown section below.
+	defer func() {
+		logger.Println("closing state store")
+		_ = store.Close()
+	}()
 
 	// ── 2. EVENT BUS ─────────────────────────────────────────────────────────
 	bus := eventbus.NewWithErrorHandler(func(topic eventbus.Topic, handlerID string, err error) {
@@ -97,8 +93,8 @@ func run(logger *log.Logger) error {
 		Store:     store,
 		Bus:       bus,
 		Providers: providers,
-		Interval:  config.DurationEnvOrDefault("NEXUS_HEALTH_INTERVAL", config.DefaultHealthInterval),
-		Timeout:   config.DurationEnvOrDefault("NEXUS_HEALTH_TIMEOUT", config.DefaultHealthTimeout),
+		Interval:  durationEnvOrDefault("NEXUS_HEALTH_INTERVAL", 10*time.Second),
+		Timeout:   durationEnvOrDefault("NEXUS_HEALTH_TIMEOUT", 5*time.Second),
 	})
 
 	recoveryCtrl := controllers.NewRecoveryController(store, bus)
@@ -108,11 +104,11 @@ func run(logger *log.Logger) error {
 		Store:     store,
 		Bus:       bus,
 		Providers: providers,
-		Interval:  config.DurationEnvOrDefault("NEXUS_RECONCILE_INTERVAL", config.DefaultReconcileInterval),
+		Interval:  durationEnvOrDefault("NEXUS_RECONCILE_INTERVAL", 5*time.Second),
 	})
 
-	// ── 6. UNIX SOCKET SERVER ─────────────────────────────────────────────────
-	socketPath := config.EnvOrDefault("NEXUS_SOCKET", daemon.DefaultSocketPath)
+	// ── 6. UNIX SOCKET SERVER ────────────────────────────────────────────────
+	socketPath := envOrDefault("NEXUS_SOCKET", daemon.DefaultSocketPath)
 	server := daemon.NewServer(daemon.ServerConfig{
 		SocketPath:  socketPath,
 		Store:       store,
@@ -120,24 +116,19 @@ func run(logger *log.Logger) error {
 		ProjectCtrl: projectCtrl,
 	})
 
-	// ── CONTEXT + SIGNAL HANDLING ─────────────────────────────────────────────
+	// ── CONTEXT + SIGNAL HANDLING ────────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// ── WAITGROUP — tracks all goroutines so shutdown is clean ────────────────
-	// wg.Wait() is called before store.Close(). This guarantees in-flight DB
-	// writes from any goroutine complete before the connection is torn down.
-	var wg sync.WaitGroup
+	// ── START ALL GOROUTINES ─────────────────────────────────────────────────
 	errCh := make(chan error, 5)
-
-	// ── 7. START ALL GOROUTINES ───────────────────────────────────────────────
+	done := make(chan struct{})
 
 	// Reconciler
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		logger.Printf("reconciler started (interval=%s)", engine.Interval())
 		if err := engine.Run(ctx); err != nil && ctx.Err() == nil {
 			errCh <- fmt.Errorf("reconciler: %w", err)
@@ -145,86 +136,59 @@ func run(logger *log.Logger) error {
 	}()
 
 	// Health controller
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		logger.Printf("health controller started (interval=%s)", healthCtrl.Interval())
 		if err := healthCtrl.Run(ctx); err != nil && ctx.Err() == nil {
 			errCh <- fmt.Errorf("health controller: %w", err)
 		}
 	}()
 
-	// Recovery controller — Run(ctx context.Context) error, not Run(ctx.Done()).
-	// The previous call passed a <-chan struct{} which is the wrong type.
-	wg.Add(1)
+	// Recovery controller
 	go func() {
-		defer wg.Done()
 		logger.Println("recovery controller started")
-		if err := recoveryCtrl.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("recovery controller: %w", err)
-		}
+		recoveryCtrl.Run(ctx.Done())
 	}()
 
 	// Unix socket server
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		logger.Printf("socket server started: %s", socketPath)
 		if err := server.Run(ctx); err != nil && ctx.Err() == nil {
 			errCh <- fmt.Errorf("socket server: %w", err)
 		}
 	}()
 
-	// Result logger — drains engine, health, and recovery channels.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logResults(ctx, logger, engine, healthCtrl, recoveryCtrl)
-	}()
+	// Result logger — reads reconciler and health channels and logs them.
+	go logResults(ctx, logger, engine, healthCtrl, recoveryCtrl)
 
 	logger.Printf("✓ Nexus daemon ready — socket=%s db=%s", socketPath, dbPath)
 
-	// ── WAIT FOR SHUTDOWN SIGNAL ──────────────────────────────────────────────
-	select {
-	case sig := <-sigCh:
-		logger.Printf("received signal %s — shutting down", sig)
-	case err := <-errCh:
-		logger.Printf("component error — shutting down: %v", err)
-	}
-
-	cancel() // unblock all goroutines
-
-	// Wait for all goroutines to finish in-flight work before closing the store.
-	// config.ShutdownTimeout replaces the former local shutdownTimeout constant.
-	logger.Printf("waiting up to %s for components to stop", config.ShutdownTimeout)
-
-	done := make(chan struct{})
+	// ── WAIT FOR SHUTDOWN ────────────────────────────────────────────────────
 	go func() {
-		wg.Wait()
+		select {
+		case sig := <-sigCh:
+			logger.Printf("received signal %s — shutting down", sig)
+		case err := <-errCh:
+			logger.Printf("component error — shutting down: %v", err)
+		}
+		cancel()
 		close(done)
 	}()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
+	<-done
+
+	// Give components time to finish in-flight work.
+	logger.Printf("waiting up to %s for components to stop", shutdownTimeout)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 
-	select {
-	case <-done:
-		logger.Println("all components stopped cleanly")
-	case <-shutdownCtx.Done():
-		logger.Println("WARNING: shutdown timeout exceeded — forcing exit")
-	}
-
-	// Deferred inside run() so store closes after wg.Wait().
-	logger.Println("closing state store")
-	_ = store.Close()
-
+	<-shutdownCtx.Done()
 	return nil
 }
 
 // ── RESULT LOGGER ────────────────────────────────────────────────────────────
 
-// logResults drains the result channels and logs significant events.
-// Keeping logging here (not in hot paths) keeps components clean.
+// logResults subscribes to result channels and logs significant events.
+// This keeps logging out of the hot paths of each component.
 func logResults(
 	ctx context.Context,
 	logger *log.Logger,
@@ -241,6 +205,7 @@ func logResults(
 			if !ok {
 				return
 			}
+			// Only log cycles where something happened.
 			if len(result.Started) > 0 || len(result.Stopped) > 0 ||
 				len(result.Maintained) > 0 || result.HasErrors() {
 				logger.Printf("reconcile: %s", result.Summary())
@@ -253,10 +218,11 @@ func logResults(
 			if !ok {
 				return
 			}
+			// Only log unhealthy results — skip noise from healthy services.
 			if !result.IsHealthy() {
 				logger.Printf("health: service=%s status=%s message=%s duration=%s",
 					result.ServiceID, result.Status, result.Message,
-					result.Duration.Round(0),
+					result.Duration.Round(time.Millisecond),
 				)
 			}
 
@@ -269,4 +235,36 @@ func logResults(
 			)
 		}
 	}
+}
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+
+func envOrDefault(key string, fallback string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return fallback
+}
+
+func durationEnvOrDefault(key string, fallback time.Duration) time.Duration {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
+
+func expandHome(path string) string {
+	if len(path) >= 2 && path[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return home + "/" + path[2:]
+	}
+	return path
 }

@@ -3,12 +3,6 @@
 // Package eventbus provides an in-process pub/sub event bus.
 // Every component in Nexus communicates exclusively through this bus.
 // No component imports another directly — only the bus is shared.
-//
-// Phase 7.6 addition:
-//   - TopicDropPendingApproval — published by the Router when a file's confidence
-//     falls in the prompt range (0.40–0.79). The CLI (engx) watches the socket
-//     for this event and presents the interactive approval prompt.
-//   - DropApprovalPayload — carries all routing details needed for the CLI prompt.
 package eventbus
 
 import (
@@ -34,25 +28,23 @@ const (
 	TopicFileDropped     Topic = "drop.file_detected"
 	TopicFileRouted      Topic = "drop.file_routed"
 	TopicFileQuarantined Topic = "drop.file_quarantined"
-
-	// TopicDropPendingApproval is published when the router cannot auto-route a
-	// file (confidence 0.40–0.79) and needs CLI confirmation.
-	// The CLI subscribes via the socket and presents an interactive prompt.
-	TopicDropPendingApproval Topic = "drop.pending_approval"
 )
 
 // Event carries data between components.
+// Publishers set Topic and Payload. Bus fills ID and PublishedAt.
 type Event struct {
 	ID          string
 	Topic       Topic
-	ServiceID   string
-	Payload     any
+	ServiceID   string // empty for system-level events
+	Payload     any    // typed payload — cast after receiving
 	PublishedAt time.Time
 }
 
 // Handler is a function that processes an event from the bus.
+// Returning an error logs it but does not stop other handlers.
 type Handler func(event Event) error
 
+// subscription links a handler to a topic with a unique ID.
 type subscription struct {
 	id      string
 	topic   Topic
@@ -62,6 +54,7 @@ type subscription struct {
 // ── BUS ──────────────────────────────────────────────────────────────────────
 
 // Bus is the central event router for the Nexus daemon.
+// All components hold a reference to the same Bus instance.
 type Bus struct {
 	mu            sync.RWMutex
 	subscriptions map[Topic][]*subscription
@@ -78,6 +71,7 @@ func New() *Bus {
 }
 
 // NewWithErrorHandler creates a Bus with a custom error handler.
+// Use this in production to route handler errors to your logger.
 func NewWithErrorHandler(onError func(topic Topic, handlerID string, err error)) *Bus {
 	return &Bus{
 		subscriptions: make(map[Topic][]*subscription),
@@ -94,12 +88,16 @@ func (b *Bus) Subscribe(topic Topic, handler Handler) string {
 	defer b.mu.Unlock()
 
 	id := generateSubscriptionID(topic)
-	sub := &subscription{id: id, topic: topic, handler: handler}
+	sub := &subscription{
+		id:      id,
+		topic:   topic,
+		handler: handler,
+	}
 	b.subscriptions[topic] = append(b.subscriptions[topic], sub)
 	return id
 }
 
-// SubscribeAll registers a handler that receives every event on every topic.
+// SubscribeAll registers a handler that receives events from every topic.
 // Useful for audit logging and debugging.
 func (b *Bus) SubscribeAll(handler Handler) string {
 	return b.Subscribe("*", handler)
@@ -123,10 +121,9 @@ func (b *Bus) Unsubscribe(subscriptionID string) {
 
 // ── PUBLISH ──────────────────────────────────────────────────────────────────
 
-// Publish sends an event synchronously to all subscribers of the topic.
+// Publish sends an event to all subscribers of its topic.
 // Also delivers to wildcard ("*") subscribers.
-// Handlers are called in the caller's goroutine — a slow handler blocks the caller.
-// Use PublishAsync for events that trigger long-running handlers (e.g. recovery).
+// All handlers are called synchronously in the calling goroutine.
 func (b *Bus) Publish(topic Topic, serviceID string, payload any) {
 	b.mu.RLock()
 	topicSubs := copySlice(b.subscriptions[topic])
@@ -150,13 +147,14 @@ func (b *Bus) Publish(topic Topic, serviceID string, payload any) {
 }
 
 // PublishAsync sends an event in a new goroutine so the caller is never blocked.
-// Used for TopicServiceCrashed and TopicRecoveryNeeded where the recovery handler
-// involves store reads/writes and must not block the health polling loop.
+// Use for fire-and-forget notifications (e.g. Windows toast, terminal notify).
 func (b *Bus) PublishAsync(topic Topic, serviceID string, payload any) {
 	go b.Publish(topic, serviceID, payload)
 }
 
 // ── TYPED PAYLOADS ───────────────────────────────────────────────────────────
+// These structs give each topic a concrete, type-safe payload.
+// Cast event.Payload to the correct type after receiving.
 
 // StateChangedPayload is published on TopicStateChanged.
 type StateChangedPayload struct {
@@ -165,7 +163,7 @@ type StateChangedPayload struct {
 	To        string
 }
 
-// HealthCheckPayload is published on TopicHealthCheck, TopicServiceCrashed, TopicServiceHealed.
+// HealthCheckPayload is published on TopicHealthCheck.
 type HealthCheckPayload struct {
 	ServiceID string
 	Status    string
@@ -205,20 +203,10 @@ type FileRoutedPayload struct {
 	Confidence   float64
 }
 
-// DropApprovalPayload is published on TopicDropPendingApproval.
-// The CLI receives this via the socket and prompts the user for confirmation.
-// Replaces the former blocking bufio.NewReader(os.Stdin) in the router.
-type DropApprovalPayload struct {
-	FilePath    string  // full path to the original file
-	ProjectID   string  // detected project
-	Destination string  // where it would be moved on approval
-	Confidence  float64 // detection confidence (0.40–0.79)
-	Method      string  // detection method used
-}
-
 // ── INTROSPECTION ────────────────────────────────────────────────────────────
 
 // SubscriberCount returns how many handlers are registered for a topic.
+// Useful for health checks and debugging.
 func (b *Bus) SubscriberCount(topic Topic) int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

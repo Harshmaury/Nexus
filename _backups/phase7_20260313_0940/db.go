@@ -3,18 +3,6 @@
 // Package state manages the SQLite source of truth for the Nexus daemon.
 // All desired and actual service states are persisted here.
 // The daemon queries this on every reconcile cycle.
-//
-// Phase 7 changes:
-//
-//	7.2 — Versioned migration system.
-//	      Replaces the flat CREATE TABLE IF NOT EXISTS loop with a proper
-//	      numbered migration table. Each migration runs exactly once.
-//	      Adding a column (ALTER TABLE) now works correctly on existing databases.
-//
-//	7.3 — Persist back-off state.
-//	      Added restart_after DATETIME column (migration v2).
-//	      New store methods: SetRestartAfter, ClearRestartAfter, GetServicesReadyToRestart.
-//	      RecoveryController no longer uses an in-memory pending map.
 package state
 
 import (
@@ -66,24 +54,19 @@ const (
 type EventSource string
 
 const (
-	SourceDaemon       EventSource = "daemon"
-	SourceDockerPlugin EventSource = "docker-plugin"
-	SourceK8sPlugin    EventSource = "k8s-plugin"
-	SourceHealthPlugin EventSource = "health-plugin"
-	SourceRecovery     EventSource = "recovery-plugin"
-	SourceDropSystem   EventSource = "drop-system"
-	SourceCLI          EventSource = "cli"
-	SourceProjectCtrl  EventSource = "project-controller"
+	SourceDaemon        EventSource = "daemon"
+	SourceDockerPlugin  EventSource = "docker-plugin"
+	SourceK8sPlugin     EventSource = "k8s-plugin"
+	SourceHealthPlugin  EventSource = "health-plugin"
+	SourceRecovery      EventSource = "recovery-plugin"
+	SourceDropSystem    EventSource = "drop-system"
+	SourceCLI           EventSource = "cli"
+	SourceProjectCtrl   EventSource = "project-controller"
 )
 
 // ── MODELS ───────────────────────────────────────────────────────────────────
 
 // Service is the core entity — one row per managed service.
-//
-// RestartAfter (nullable) is the time after which the RecoveryController
-// will re-queue this service for startup. A nil value means no pending restart.
-// Previously this was an in-memory map in RecoveryController — persisting it
-// here means daemon restarts during a back-off window still honour the delay.
 type Service struct {
 	ID           string
 	Name         string
@@ -94,12 +77,13 @@ type Service struct {
 	Config       string
 	FailCount    int
 	LastFailedAt *time.Time
-	RestartAfter *time.Time // non-nil = back-off pending; persisted (Phase 7.3)
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
 // Event is an immutable log of everything that happened.
+// source — which component emitted it (docker-plugin, daemon, cli...)
+// trace_id — groups related events across a single operation (e.g. crash→recover→heal)
 type Event struct {
 	ID        int64
 	ServiceID string
@@ -129,7 +113,7 @@ type DownloadLog struct {
 	Source       string
 	Destination  string
 	Method       string
-	Action       string
+	Action       string    // moved | prompted | tagged | skipped
 	Confidence   float64
 	DownloadedAt time.Time
 }
@@ -154,14 +138,14 @@ type Store struct {
 }
 
 // New opens (or creates) the SQLite database at the given path.
-// Runs versioned migrations automatically on first open.
+// Runs all migrations automatically on first open.
 func New(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// SQLite performs best with a single writer.
+	// SQLite performs best with a single writer — prevent locking errors.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
@@ -190,26 +174,25 @@ func (s *Store) UpsertService(svc *Service) error {
 	query := `
 		INSERT INTO services (
 			id, name, project, desired_state, actual_state,
-			provider, config, fail_count, last_failed_at, restart_after,
+			provider, config, fail_count, last_failed_at,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			name          = excluded.name,
-			desired_state = excluded.desired_state,
-			actual_state  = excluded.actual_state,
-			provider      = excluded.provider,
-			config        = excluded.config,
-			fail_count    = excluded.fail_count,
+			name           = excluded.name,
+			desired_state  = excluded.desired_state,
+			actual_state   = excluded.actual_state,
+			provider       = excluded.provider,
+			config         = excluded.config,
+			fail_count     = excluded.fail_count,
 			last_failed_at = excluded.last_failed_at,
-			restart_after  = excluded.restart_after,
-			updated_at    = excluded.updated_at
+			updated_at     = excluded.updated_at
 	`
 	now := time.Now().UTC()
 	_, err := s.db.Exec(query,
 		svc.ID, svc.Name, svc.Project,
 		svc.DesiredState, svc.ActualState,
 		svc.Provider, svc.Config,
-		svc.FailCount, svc.LastFailedAt, svc.RestartAfter,
+		svc.FailCount, svc.LastFailedAt,
 		now, now,
 	)
 	if err != nil {
@@ -218,15 +201,27 @@ func (s *Store) UpsertService(svc *Service) error {
 	return nil
 }
 
-// GetService returns a single service by ID, or nil if not found.
+// GetService returns a single service by ID.
 func (s *Store) GetService(id string) (*Service, error) {
-	row := s.db.QueryRow(serviceSelectQuery+" WHERE id = ?", id)
+	query := `
+		SELECT id, name, project, desired_state, actual_state,
+		       provider, config, fail_count, last_failed_at,
+		       created_at, updated_at
+		FROM services WHERE id = ?
+	`
+	row := s.db.QueryRow(query, id)
 	return scanService(row)
 }
 
 // GetAllServices returns every registered service.
 func (s *Store) GetAllServices() ([]*Service, error) {
-	rows, err := s.db.Query(serviceSelectQuery + " ORDER BY project, name")
+	query := `
+		SELECT id, name, project, desired_state, actual_state,
+		       provider, config, fail_count, last_failed_at,
+		       created_at, updated_at
+		FROM services ORDER BY project, name
+	`
+	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("query all services: %w", err)
 	}
@@ -236,7 +231,13 @@ func (s *Store) GetAllServices() ([]*Service, error) {
 
 // GetServicesByProject returns all services for a given project.
 func (s *Store) GetServicesByProject(project string) ([]*Service, error) {
-	rows, err := s.db.Query(serviceSelectQuery+" WHERE project = ? ORDER BY name", project)
+	query := `
+		SELECT id, name, project, desired_state, actual_state,
+		       provider, config, fail_count, last_failed_at,
+		       created_at, updated_at
+		FROM services WHERE project = ? ORDER BY name
+	`
+	rows, err := s.db.Query(query, project)
 	if err != nil {
 		return nil, fmt.Errorf("query services for project %s: %w", project, err)
 	}
@@ -246,7 +247,13 @@ func (s *Store) GetServicesByProject(project string) ([]*Service, error) {
 
 // GetRunningServices returns all services with desired_state = running.
 func (s *Store) GetRunningServices() ([]*Service, error) {
-	rows, err := s.db.Query(serviceSelectQuery+" WHERE desired_state = ? ORDER BY project, name", StateRunning)
+	query := `
+		SELECT id, name, project, desired_state, actual_state,
+		       provider, config, fail_count, last_failed_at,
+		       created_at, updated_at
+		FROM services WHERE desired_state = ? ORDER BY project, name
+	`
+	rows, err := s.db.Query(query, StateRunning)
 	if err != nil {
 		return nil, fmt.Errorf("query running services: %w", err)
 	}
@@ -303,48 +310,6 @@ func (s *Store) ResetFailCount(id string) error {
 	return nil
 }
 
-// ── BACK-OFF PERSISTENCE (Phase 7.3) ─────────────────────────────────────────
-
-// SetRestartAfter records when a back-off service should next attempt startup.
-// Replaces the in-memory pending map in RecoveryController.
-func (s *Store) SetRestartAfter(id string, restartAt time.Time) error {
-	_, err := s.db.Exec(
-		`UPDATE services SET restart_after = ?, updated_at = ? WHERE id = ?`,
-		restartAt.UTC(), time.Now().UTC(), id,
-	)
-	if err != nil {
-		return fmt.Errorf("set restart_after for %s: %w", id, err)
-	}
-	return nil
-}
-
-// ClearRestartAfter removes the back-off timestamp after a restart is triggered.
-func (s *Store) ClearRestartAfter(id string) error {
-	_, err := s.db.Exec(
-		`UPDATE services SET restart_after = NULL, updated_at = ? WHERE id = ?`,
-		time.Now().UTC(), id,
-	)
-	if err != nil {
-		return fmt.Errorf("clear restart_after for %s: %w", id, err)
-	}
-	return nil
-}
-
-// GetServicesReadyToRestart returns all services whose restart_after has passed.
-// RecoveryController calls this every tick instead of scanning an in-memory map.
-func (s *Store) GetServicesReadyToRestart() ([]*Service, error) {
-	now := time.Now().UTC()
-	rows, err := s.db.Query(
-		serviceSelectQuery+` WHERE restart_after IS NOT NULL AND restart_after <= ?`,
-		now,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query services ready to restart: %w", err)
-	}
-	defer rows.Close()
-	return scanServices(rows)
-}
-
 // ── EVENT OPERATIONS ─────────────────────────────────────────────────────────
 
 // AppendEvent writes an immutable event with source and optional trace ID.
@@ -382,7 +347,7 @@ func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	return events, rows.Err()
 }
 
-// GetEventsByTrace returns all events sharing a trace ID.
+// GetEventsByTrace returns all events sharing a trace ID — full operation history.
 func (s *Store) GetEventsByTrace(traceID string) ([]*Event, error) {
 	rows, err := s.db.Query(
 		`SELECT id, service_id, type, source, trace_id, payload, created_at
@@ -455,7 +420,7 @@ func (s *Store) RegisterProject(p *Project) error {
 	return nil
 }
 
-// GetProject returns a single project by ID, or nil if not found.
+// GetProject returns a single project by ID.
 func (s *Store) GetProject(id string) (*Project, error) {
 	row := s.db.QueryRow(
 		`SELECT id, name, path, language, project_type, config_json, registered_at, updated_at
@@ -533,150 +498,90 @@ func (s *Store) GetRecentDownloads(limit int) ([]*DownloadLog, error) {
 	return logs, rows.Err()
 }
 
-// ── VERSIONED MIGRATIONS (Phase 7.2) ─────────────────────────────────────────
-//
-// How it works:
-//  1. schema_migrations is created unconditionally on every startup (safe — IF NOT EXISTS).
-//  2. The current max version is read.
-//  3. Only migrations with version > max are applied, in order.
-//  4. Each applied migration inserts its version into schema_migrations.
-//
-// This means:
-//   - Adding a new table: wrap in a new migration version (old IF NOT EXISTS pattern no longer used).
-//   - Adding a column: ALTER TABLE works correctly because it runs exactly once.
-//   - Re-running migrate() on an existing database is always a no-op.
-
-type schemaVersion struct {
-	version int
-	up      string
-}
-
-// allMigrations is the ordered, append-only migration history.
-// Never edit an existing entry — only add new ones at the end.
-var allMigrations = []schemaVersion{
-	// ── v1: initial schema ─────────────────────────────────────────────────
-	{1, `CREATE TABLE IF NOT EXISTS services (
-		id             TEXT PRIMARY KEY,
-		name           TEXT NOT NULL,
-		project        TEXT NOT NULL DEFAULT '',
-		desired_state  TEXT NOT NULL DEFAULT 'stopped',
-		actual_state   TEXT NOT NULL DEFAULT 'unknown',
-		provider       TEXT NOT NULL DEFAULT 'docker',
-		config         TEXT NOT NULL DEFAULT '{}',
-		fail_count     INTEGER NOT NULL DEFAULT 0,
-		last_failed_at DATETIME,
-		created_at     DATETIME NOT NULL,
-		updated_at     DATETIME NOT NULL
-	)`},
-	{1, `CREATE TABLE IF NOT EXISTS events (
-		id         INTEGER PRIMARY KEY AUTOINCREMENT,
-		service_id TEXT NOT NULL,
-		type       TEXT NOT NULL,
-		source     TEXT NOT NULL DEFAULT '',
-		trace_id   TEXT NOT NULL DEFAULT '',
-		payload    TEXT NOT NULL DEFAULT '{}',
-		created_at DATETIME NOT NULL
-	)`},
-	{1, `CREATE TABLE IF NOT EXISTS health_logs (
-		id         INTEGER PRIMARY KEY AUTOINCREMENT,
-		service_id TEXT NOT NULL,
-		status     TEXT NOT NULL,
-		exit_code  INTEGER NOT NULL DEFAULT 0,
-		message    TEXT NOT NULL DEFAULT '',
-		checked_at DATETIME NOT NULL
-	)`},
-	{1, `CREATE TABLE IF NOT EXISTS projects (
-		id            TEXT PRIMARY KEY,
-		name          TEXT NOT NULL,
-		path          TEXT NOT NULL,
-		language      TEXT NOT NULL DEFAULT '',
-		project_type  TEXT NOT NULL DEFAULT '',
-		config_json   TEXT NOT NULL DEFAULT '{}',
-		registered_at DATETIME NOT NULL,
-		updated_at    DATETIME NOT NULL
-	)`},
-	{1, `CREATE TABLE IF NOT EXISTS download_log (
-		id            INTEGER PRIMARY KEY AUTOINCREMENT,
-		original_name TEXT NOT NULL,
-		renamed_to    TEXT NOT NULL,
-		project       TEXT NOT NULL DEFAULT '',
-		source        TEXT NOT NULL DEFAULT '',
-		destination   TEXT NOT NULL DEFAULT '',
-		method        TEXT NOT NULL DEFAULT '',
-		action        TEXT NOT NULL DEFAULT '',
-		confidence    REAL NOT NULL DEFAULT 0.0,
-		downloaded_at DATETIME NOT NULL
-	)`},
-	// Indexes
-	{1, `CREATE INDEX IF NOT EXISTS idx_services_project       ON services(project)`},
-	{1, `CREATE INDEX IF NOT EXISTS idx_services_desired_state ON services(desired_state)`},
-	{1, `CREATE INDEX IF NOT EXISTS idx_events_service_id      ON events(service_id)`},
-	{1, `CREATE INDEX IF NOT EXISTS idx_events_created_at      ON events(created_at)`},
-	{1, `CREATE INDEX IF NOT EXISTS idx_events_trace_id        ON events(trace_id)`},
-	{1, `CREATE INDEX IF NOT EXISTS idx_events_source          ON events(source)`},
-	{1, `CREATE INDEX IF NOT EXISTS idx_health_service_id      ON health_logs(service_id)`},
-	{1, `CREATE INDEX IF NOT EXISTS idx_health_checked_at      ON health_logs(checked_at)`},
-	{1, `CREATE INDEX IF NOT EXISTS idx_download_project       ON download_log(project)`},
-
-	// ── v2: persist back-off state ────────────────────────────────────────
-	// Adds restart_after column. RecoveryController.pending map replaced by this.
-	// ALTER TABLE runs exactly once — safe on both fresh and existing databases.
-	{2, `ALTER TABLE services ADD COLUMN restart_after DATETIME`},
-	{2, `CREATE INDEX IF NOT EXISTS idx_services_restart_after ON services(restart_after)`},
-}
+// ── MIGRATIONS ───────────────────────────────────────────────────────────────
 
 func (s *Store) migrate() error {
-	// Step 1: bootstrap the migrations table itself (always safe).
-	if _, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version    INTEGER PRIMARY KEY,
-			applied_at DATETIME NOT NULL
-		)
-	`); err != nil {
-		return fmt.Errorf("create schema_migrations table: %w", err)
+	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS services (
+			id             TEXT PRIMARY KEY,
+			name           TEXT NOT NULL,
+			project        TEXT NOT NULL DEFAULT '',
+			desired_state  TEXT NOT NULL DEFAULT 'stopped',
+			actual_state   TEXT NOT NULL DEFAULT 'unknown',
+			provider       TEXT NOT NULL DEFAULT 'docker',
+			config         TEXT NOT NULL DEFAULT '{}',
+			fail_count     INTEGER NOT NULL DEFAULT 0,
+			last_failed_at DATETIME,
+			created_at     DATETIME NOT NULL,
+			updated_at     DATETIME NOT NULL
+		)`,
+
+		// source  — which component emitted this event
+		// trace_id — groups all events from a single operation
+		`CREATE TABLE IF NOT EXISTS events (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			service_id TEXT NOT NULL,
+			type       TEXT NOT NULL,
+			source     TEXT NOT NULL DEFAULT '',
+			trace_id   TEXT NOT NULL DEFAULT '',
+			payload    TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS health_logs (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			service_id TEXT NOT NULL,
+			status     TEXT NOT NULL,
+			exit_code  INTEGER NOT NULL DEFAULT 0,
+			message    TEXT NOT NULL DEFAULT '',
+			checked_at DATETIME NOT NULL
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS projects (
+			id            TEXT PRIMARY KEY,
+			name          TEXT NOT NULL,
+			path          TEXT NOT NULL,
+			language      TEXT NOT NULL DEFAULT '',
+			project_type  TEXT NOT NULL DEFAULT '',
+			config_json   TEXT NOT NULL DEFAULT '{}',
+			registered_at DATETIME NOT NULL,
+			updated_at    DATETIME NOT NULL
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS download_log (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			original_name TEXT NOT NULL,
+			renamed_to    TEXT NOT NULL,
+			project       TEXT NOT NULL DEFAULT '',
+			source        TEXT NOT NULL DEFAULT '',
+			destination   TEXT NOT NULL DEFAULT '',
+			method        TEXT NOT NULL DEFAULT '',
+			action        TEXT NOT NULL DEFAULT '',
+			confidence    REAL NOT NULL DEFAULT 0.0,
+			downloaded_at DATETIME NOT NULL
+		)`,
+
+		// Indexes
+		`CREATE INDEX IF NOT EXISTS idx_services_project       ON services(project)`,
+		`CREATE INDEX IF NOT EXISTS idx_services_desired_state ON services(desired_state)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_service_id      ON events(service_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_created_at      ON events(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_trace_id        ON events(trace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_source          ON events(source)`,
+		`CREATE INDEX IF NOT EXISTS idx_health_service_id      ON health_logs(service_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_health_checked_at      ON health_logs(checked_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_download_project       ON download_log(project)`,
 	}
 
-	// Step 2: find the highest applied version.
-	var currentVersion int
-	if err := s.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&currentVersion); err != nil {
-		return fmt.Errorf("read current schema version: %w", err)
-	}
-
-	// Step 3: collect all migrations with version > currentVersion and run them.
-	// They must be applied in order — and schema_migrations is updated atomically
-	// with each migration inside a transaction.
-	appliedVersions := map[int]bool{}
-	for _, m := range allMigrations {
-		if m.version <= currentVersion {
-			continue // already applied
-		}
-		if _, err := s.db.Exec(m.up); err != nil {
-			return fmt.Errorf("migration v%d failed: %w\nSQL: %s", m.version, err, m.up)
-		}
-		// Insert the version once per unique version number (multiple SQL stmts share a version).
-		if !appliedVersions[m.version] {
-			appliedVersions[m.version] = true
-			if _, err := s.db.Exec(
-				`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
-				m.version, time.Now().UTC(),
-			); err != nil {
-				return fmt.Errorf("record migration v%d: %w", m.version, err)
-			}
+	for _, migration := range migrations {
+		if _, err := s.db.Exec(migration); err != nil {
+			return fmt.Errorf("migration failed: %w\nSQL: %s", err, migration)
 		}
 	}
-
 	return nil
 }
 
 // ── SCAN HELPERS ─────────────────────────────────────────────────────────────
-
-// serviceSelectQuery is the canonical column list for all service SELECTs.
-// Keeping it here ensures scans and queries never drift out of sync.
-const serviceSelectQuery = `
-	SELECT id, name, project, desired_state, actual_state,
-	       provider, config, fail_count, last_failed_at, restart_after,
-	       created_at, updated_at
-	FROM services`
 
 func scanService(row *sql.Row) (*Service, error) {
 	svc := &Service{}
@@ -684,7 +589,7 @@ func scanService(row *sql.Row) (*Service, error) {
 		&svc.ID, &svc.Name, &svc.Project,
 		&svc.DesiredState, &svc.ActualState,
 		&svc.Provider, &svc.Config,
-		&svc.FailCount, &svc.LastFailedAt, &svc.RestartAfter,
+		&svc.FailCount, &svc.LastFailedAt,
 		&svc.CreatedAt, &svc.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -704,7 +609,7 @@ func scanServices(rows *sql.Rows) ([]*Service, error) {
 			&svc.ID, &svc.Name, &svc.Project,
 			&svc.DesiredState, &svc.ActualState,
 			&svc.Provider, &svc.Config,
-			&svc.FailCount, &svc.LastFailedAt, &svc.RestartAfter,
+			&svc.FailCount, &svc.LastFailedAt,
 			&svc.CreatedAt, &svc.UpdatedAt,
 		)
 		if err != nil {

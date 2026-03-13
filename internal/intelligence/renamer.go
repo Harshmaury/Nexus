@@ -96,6 +96,21 @@ func (r *Renamer) Rename(filePath string, projectID string, feature string) (Ren
 	}, nil
 }
 
+
+// ParseCanonicalName extracts the projectID and feature segments from a
+// canonical Nexus filename ([project]__[feature]__[YYYYMMDD_HHMM].[ext]).
+// Returns empty strings if the filename does not follow the convention.
+func ParseCanonicalName(fileName string) (projectID string, feature string) {
+	ext := filepath.Ext(fileName)
+	nameNoExt := strings.TrimSuffix(fileName, ext)
+
+	parts := strings.SplitN(nameNoExt, "__", 3)
+	if len(parts) < 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
 // sanitiseSegment lowercases and replaces illegal characters with hyphens.

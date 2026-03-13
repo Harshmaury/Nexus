@@ -4,23 +4,6 @@
 // records the result in health_logs, updates actual_state in the store,
 // and publishes events so the reconciler and recovery controller can react.
 // It runs as a separate goroutine from the reconciler — never blocks it.
-//
-// Phase 7 changes:
-//
-//   7.1 — Removed local defaultHealthInterval and defaultHealthTimeout constants.
-//         Both now come from internal/config, the single source of truth.
-//         (Consistent with engine.go, recovery.go, project_controller.go.)
-//
-//   7.4 — TopicServiceCrashed and TopicRecoveryNeeded are now published via
-//         bus.PublishAsync instead of bus.Publish.
-//
-//         The previous synchronous Publish meant RecoveryController's
-//         onRecoveryNeeded handler ran inside HealthController's polling goroutine
-//         before Publish returned. A slow or panicking recovery handler would
-//         block or crash the entire health poll cycle for all services.
-//
-//         PublishAsync dispatches the handler in a new goroutine, so the health
-//         loop always continues regardless of recovery latency.
 package controllers
 
 import (
@@ -28,7 +11,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/Harshmaury/Nexus/pkg/runtime"
@@ -36,7 +18,11 @@ import (
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const healthCheckResultBufSize = 50
+const (
+	defaultHealthInterval    = 10 * time.Second
+	defaultHealthTimeout     = 5 * time.Second
+	healthCheckResultBufSize = 50
+)
 
 // ── MODELS ───────────────────────────────────────────────────────────────────
 
@@ -83,12 +69,12 @@ type HealthControllerConfig struct {
 func NewHealthController(cfg HealthControllerConfig) *HealthController {
 	interval := cfg.Interval
 	if interval == 0 {
-		interval = config.DefaultHealthInterval // from internal/config, not a local const
+		interval = defaultHealthInterval
 	}
 
 	timeout := cfg.Timeout
 	if timeout == 0 {
-		timeout = config.DefaultHealthTimeout // from internal/config, not a local const
+		timeout = defaultHealthTimeout
 	}
 
 	return &HealthController{
@@ -105,6 +91,7 @@ func NewHealthController(cfg HealthControllerConfig) *HealthController {
 // ── RUN ──────────────────────────────────────────────────────────────────────
 
 // Run starts the health polling loop and blocks until ctx is cancelled.
+// Call this in a goroutine from the daemon entry point.
 func (h *HealthController) Run(ctx context.Context) error {
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
@@ -156,9 +143,11 @@ func (h *HealthController) pollAll(ctx context.Context) {
 // ── CHECK ONE SERVICE ────────────────────────────────────────────────────────
 
 // checkService performs a single health check against the provider.
+// Always returns a result — never panics or returns nil.
 func (h *HealthController) checkService(ctx context.Context, svc *state.Service) HealthCheckResult {
 	start := time.Now()
 
+	// Per-check timeout — prevents one slow provider from blocking all checks.
 	checkCtx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
 
@@ -199,6 +188,9 @@ func (h *HealthController) checkService(ctx context.Context, svc *state.Service)
 		}
 	}
 
+	// Not running — interpret based on desired state.
+	// If desired = running, the service should be up → crashed.
+	// If desired = stopped, not running is correct → stopped (not a crash).
 	notRunningStatus := state.StateCrashed
 	notRunningMessage := "provider reports service not running"
 	if svc.DesiredState != state.StateRunning {
@@ -222,6 +214,7 @@ func (h *HealthController) checkService(ctx context.Context, svc *state.Service)
 func (h *HealthController) handleResult(svc *state.Service, result HealthCheckResult) {
 	traceID := fmt.Sprintf("health-%s-%d", svc.ID, result.CheckedAt.UnixNano())
 
+	// Always log to health_logs — this is the audit trail.
 	if err := h.store.LogHealth(
 		result.ServiceID,
 		result.Status,
@@ -234,10 +227,12 @@ func (h *HealthController) handleResult(svc *state.Service, result HealthCheckRe
 		)
 	}
 
+	// Only update actual_state and emit events when state has changed.
 	if result.Status == svc.ActualState {
-		return // no change — nothing to publish
+		return
 	}
 
+	// State changed — update the store.
 	if err := h.store.SetActualState(result.ServiceID, result.Status); err != nil {
 		_ = h.events.SystemAlert("warn",
 			fmt.Sprintf("failed to update actual state for %s: %v", result.ServiceID, err),
@@ -246,11 +241,12 @@ func (h *HealthController) handleResult(svc *state.Service, result HealthCheckRe
 		return
 	}
 
+	// Emit typed events for state transitions.
 	switch result.Status {
 	case state.StateRunning:
 		if svc.ActualState == state.StateCrashed || svc.ActualState == state.StateRecovering {
+			// Was crashed/recovering, now running — healed.
 			_ = h.events.ServiceHealed(result.ServiceID, traceID)
-			// Healed events are informational — synchronous is fine.
 			h.bus.Publish(eventbus.TopicServiceHealed, result.ServiceID, eventbus.HealthCheckPayload{
 				ServiceID: result.ServiceID,
 				Status:    string(result.Status),
@@ -260,21 +256,14 @@ func (h *HealthController) handleResult(svc *state.Service, result HealthCheckRe
 
 	case state.StateCrashed:
 		_ = h.events.ServiceCrashed(result.ServiceID, traceID, result.ExitCode, result.Message)
-
-		// PublishAsync: crash events trigger the RecoveryController's onRecoveryNeeded
-		// handler, which talks to the store and can be slow. Running it synchronously
-		// would block this health poll goroutine for all other services.
-		h.bus.PublishAsync(eventbus.TopicServiceCrashed, result.ServiceID, eventbus.HealthCheckPayload{
+		h.bus.Publish(eventbus.TopicServiceCrashed, result.ServiceID, eventbus.HealthCheckPayload{
 			ServiceID: result.ServiceID,
 			Status:    string(result.Status),
 			ExitCode:  result.ExitCode,
 			Message:   result.Message,
 		})
-
-		// TopicRecoveryNeeded triggers onRecoveryNeeded in RecoveryController.
-		// Must be async for the same reason — recovery policy evaluation involves
-		// store reads and writes and must not block the health loop.
-		h.bus.PublishAsync(eventbus.TopicRecoveryNeeded, result.ServiceID, eventbus.RecoveryPayload{
+		// Publish recovery needed — recovery controller (06) listens to this.
+		h.bus.Publish(eventbus.TopicRecoveryNeeded, result.ServiceID, eventbus.RecoveryPayload{
 			ServiceID:  result.ServiceID,
 			FailCount:  svc.FailCount,
 			LastFailed: result.CheckedAt,
@@ -293,10 +282,12 @@ func (h *HealthController) handleResult(svc *state.Service, result HealthCheckRe
 
 // ── PUBLISH RESULT ───────────────────────────────────────────────────────────
 
+// publishResult sends the result to the results channel (non-blocking).
 func (h *HealthController) publishResult(result HealthCheckResult) {
 	select {
 	case h.results <- result:
 	default:
+		// Channel full — drop oldest, never block the health loop.
 		select {
 		case <-h.results:
 		default:

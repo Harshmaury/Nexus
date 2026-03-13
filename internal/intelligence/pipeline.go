@@ -92,8 +92,8 @@ func (p *Pipeline) process(ctx context.Context, filePath string) error {
 		// Non-fatal — continue with original path.
 	} else if renameResult.WasRenamed {
 		// Update detection with new path.
-		detection.FilePath = renameResult.FinalPath
-		detection.FileName = renameResult.FinalName
+		detection.FilePath = renameResult.NewPath
+		detection.FileName = renameResult.NewName
 	}
 
 	// Step 3 — Route.
