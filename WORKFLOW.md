@@ -1,6 +1,6 @@
 # NEXUS MASTER WORKFLOW
-# @version: 1.1.0
-# @updated: 2026-03-12
+# @version: 1.2.0
+# @updated: 2026-03-13
 # @author: Harsh Maury
 # @repo: https://github.com/Harshmaury/Nexus
 #
@@ -88,10 +88,10 @@ language: Go 1.24
 type:     platform-daemon
 purpose:  Controls ALL other projects. Never coupled to them.
 github:   https://github.com/Harshmaury/Nexus
-status:   IN DEVELOPMENT — Phase 1+2 complete, refactor done. Next: Docker provider
+status:   IN DEVELOPMENT — Phase 7 complete. Active: Phase 8 (REST API)
 start:    go run ./cmd/engxd/
 build:    go build -o ~/bin/engxd ./cmd/engxd/
-test:     go test ./...
+test:     go test ./internal/... -count=1
 
 ### ums
 path:     /mnt/c/Users/harsh/source/repos/AspireApp1
@@ -119,53 +119,127 @@ warning:  Do not stop without saving state
 
 ## [NEXUS_BUILD_STATUS]
 # UPDATE THIS SECTION: after completing each phase component
-# Last verified: 2026-03-12 at commit 885a15d — go build PASS
+# Last verified: 2026-03-13 — branch: phase8-api — go test ./internal/... PASS (42 tests)
 
 Phase 1 — Daemon Core: ✅ COMPLETE
-  [x] 01 internal/state/db.go                    → SQLite state store
-  [x] 02 internal/eventbus/bus.go                → Event pub/sub
-  [x] 03 pkg/runtime/provider.go                 → Provider interface
-  [x] 04 internal/daemon/engine.go               → Reconciler loop
-  [x] 05 internal/controllers/health.go          → Health controller
-  [x] 06 internal/controllers/recovery.go        → Recovery + back-off
-  [x] 07 internal/daemon/server.go               → Unix socket server
-  [x] 08 cmd/engxd/main.go                       → Daemon entry point
-  [x] 08 cmd/engx/main.go                        → CLI entry point
+  [x] internal/state/db.go                    → SQLite state store
+  [x] internal/eventbus/bus.go                → Event pub/sub
+  [x] pkg/runtime/provider.go                 → Provider interface
+  [x] internal/daemon/engine.go               → Reconciler loop
+  [x] internal/controllers/health.go          → Health controller
+  [x] internal/controllers/recovery.go        → Recovery + back-off
+  [x] internal/daemon/server.go               → Unix socket server
+  [x] cmd/engxd/main.go                       → Daemon entry point
+  [x] cmd/engx/main.go                        → CLI entry point
 
 Phase 1 — Refactor: ✅ COMPLETE (885a15d)
-  [x] internal/config/policy.go                  → Single source for all policy constants
-  [x] internal/config/env.go                     → ExpandHome, EnvOrDefault helpers
-  [x] internal/daemon/engine.go                  → slog, logged errors, imports config
-  [x] internal/controllers/recovery.go           → context.Context Run(), imports config
+  [x] internal/config/policy.go               → Single source for all policy constants
+  [x] internal/config/env.go                  → ExpandHome, EnvOrDefault helpers
+  [x] internal/daemon/engine.go               → slog, logged errors, imports config
+  [x] internal/controllers/recovery.go        → context.Context Run(), imports config
   [x] internal/controllers/project_controller.go → imports config, no local constants
-  [x] cmd/engxd/main.go                          → sync.WaitGroup shutdown, log/slog
-  [x] cmd/engx/main.go                           → imports config, no local duplicates
+  [x] cmd/engxd/main.go                       → sync.WaitGroup shutdown, log/slog
+  [x] cmd/engx/main.go                        → imports config, no local duplicates
 
 Phase 2 — Drop Intelligence: ✅ COMPLETE
-  [x] internal/watcher/watcher.go                → inotify file watcher
-  [x] internal/intelligence/detector.go          → 4-layer weighted detection
-  [x] internal/intelligence/renamer.go           → canonical rename
-  [x] internal/intelligence/router.go            → confidence router
-  [x] internal/intelligence/logger.go            → download audit log
-  [x] internal/intelligence/pipeline.go          → full pipeline coordinator
+  [x] internal/watcher/watcher.go             → inotify file watcher
+  [x] internal/intelligence/detector.go       → 4-layer weighted detection
+  [x] internal/intelligence/renamer.go        → canonical rename + ParseCanonicalName
+  [x] internal/intelligence/router.go         → confidence router (non-blocking, PS injection fixed)
+  [x] internal/intelligence/logger.go         → download audit log
+  [x] internal/intelligence/pipeline.go       → full pipeline coordinator (field names fixed)
 
-Phase 2 — Known Bugs (not yet fixed):
-  [ ] internal/intelligence/logger.go:52         → LogDownload signature mismatch with state.Store
-  [ ] internal/intelligence/renamer.go           → sanitiseSegment compiles regex on every call
-  [ ] internal/intelligence/router.go            → PowerShell injection via fmt.Sprintf
+Phase 3 — Providers: ✅ COMPLETE
+  [x] pkg/runtime/docker/provider.go          → Docker SDK — label-based IsRunning
+  [x] pkg/runtime/process/provider.go         → os/exec for local processes
+  [x] pkg/runtime/k8s/provider.go             → client-go, scale-to-0 stop strategy
 
-Phase 3 — Providers (NEXT):
-  [ ] pkg/runtime/docker/provider.go             → Docker SDK implementation
-  [ ] pkg/runtime/process/provider.go            → os/exec for local processes
-  [ ] pkg/runtime/k8s/provider.go                → client-go for Minikube
+Phase 4 — CLI Commands: ✅ COMPLETE
+  [x] cmd/engx/main.go                        → register, project start/stop/status,
+                                                 services, events, logs, doctor, version
+  NOTE: engx drop approve/reject pending — requires Phase 8 socket commands
 
-Phase 4 — CLI Commands:
-  [ ] engx start / stop / status / logs / events / doctor
+Phase 5 — Tests: ✅ COMPLETE (42 tests, all passing)
+  [x] internal/state/db_test.go               → 17 tests — migrations, CRUD, restart_after
+  [x] internal/eventbus/bus_test.go           → 12 tests — pub/sub, async, deadlock safety
+  [x] internal/daemon/engine_test.go          → 6 tests  — reconciler cycles
+  [x] internal/controllers/recovery_test.go   → 7 tests  — back-off policy, DB persistence
+  [x] internal/intelligence/detector_test.go  → exists in nexus/ copy
 
-Phase 5 — Tests:
-  [ ] internal/intelligence/detector_test.go     → table-driven unit tests
-  [ ] internal/state/db_test.go                  → store integration tests
-  [ ] internal/daemon/engine_test.go             → reconciler unit tests
+Phase 7 — Internal Hardening: ✅ COMPLETE (2026-03-13, branch: phase7-hardening → phase7-hardened)
+  [x] AGS-7.1 Policy dedup complete           → health.go + main.go local constants removed
+  [x] AGS-7.2 Versioned migrations            → schema_migrations table, v1 + v2 applied
+  [x] AGS-7.3 Persist back-off state          → restart_after column, pending map removed
+  [x] AGS-7.4 Async crash events              → PublishAsync for TopicServiceCrashed + TopicRecoveryNeeded
+  [x] AGS-7.5 WaitGroup shutdown              → all 5 goroutines joined before store.Close()
+  [x] AGS-7.6 Non-blocking router             → TopicDropPendingApproval replaces stdin read
+  Files shipped: db.go, recovery.go, health.go, bus.go, router.go, main.go (engxd)
+                 + 4 test files (42 tests total)
+
+Phase 8 — REST API Layer: 🔄 ACTIVE (branch: phase8-api)
+  Architecture doc ref: Part III, Phase 8
+  [ ] internal/api/server.go                  → HTTP server, middleware, API key auth
+  [ ] internal/api/handlers.go                → thin adapters — no business logic
+  [ ] internal/api/middleware.go              → X-Nexus-Key auth, request logging
+  [ ] cmd/engxd/main.go                       → wire API server into daemon startup
+  [ ] cmd/engx/main.go                        → engx drop approve/reject (socket commands)
+  Bind: 127.0.0.1 only until auth is complete
+  API key: ~/.nexus/api_key
+
+  Planned endpoints:
+    GET  /api/projects
+    POST /api/projects/{id}/start
+    POST /api/projects/{id}/stop
+    GET  /api/services
+    GET  /api/events
+    GET  /api/health
+    GET  /api/metrics            (Prometheus text — Phase 10 prerequisite)
+    POST /api/drop/approve
+
+Phase 9 — Project Dependency Graph: ⏳ PENDING (requires Phase 7)
+  [ ] db.go migration            → service_dependencies table
+  [ ] internal/daemon/engine.go  → wait for dependencies before starting service
+  [ ] .nexus.yaml schema         → depends_on list
+  [ ] cmd/engx/main.go           → engx graph, engx project start --wait
+
+Phase 10 — Observability (OTel + TUI): ⏳ PENDING (requires Phase 8)
+  [ ] internal/telemetry/        → OTel spans, Prometheus counters/gauges/histograms
+  [ ] cmd/engx/main.go           → engx watch (bubbletea TUI)
+  Jaeger already running at Minikube :16686 — zero new infra needed
+
+Phase 11 — Drop Intelligence v2: ⏳ PENDING (requires Phase 7)
+  [ ] internal/intelligence/classifier.go  → ML layer 5 (TF-IDF + logistic regression)
+  [ ] engx drop train                       → re-train from download_log table
+  [ ] Multi-dir watching                    → WatchDirs []string in config
+
+Phase 12 — Multi-Machine Agent Mode: ⏳ FUTURE (requires Phases 7 + 8)
+  [ ] internal/agent/            → remote agent, syncs desired state from server
+  [ ] gRPC proto                 → agent registration + state delta stream
+  [ ] State store                → SQLite → BadgerDB for server role
+
+---
+
+## [ARCHITECTURE_REFERENCE]
+# Quick reference from Nexus-Architecture-Analysis.docx (March 2026)
+# Full doc: C:\Users\harsh\Downloads\nexus-drop\Nexus-Architecture-Analysis.docx
+
+Layer map:
+  Presentation  → cmd/engx              (cobra CLI)
+  Transport     → daemon/server         (Unix socket, JSON)
+  Application   → controllers/          (ProjectController, HealthController, RecoveryController)
+  Domain        → daemon/engine, state/ (Engine, Store, Service)
+  Infrastructure→ pkg/runtime/*, watcher/
+  Messaging     → eventbus/             (Bus, Topic, Handler)
+  Intelligence  → intelligence/         (Detector, Renamer, Router, Pipeline)
+
+Key design rules (never violate):
+  - Nexus is NEVER directly coupled to UMS or any specific project
+  - Health controller: purely observational — polls and emits, NEVER changes desired state
+  - Recovery controller: owns ALL restart policy — nothing else does
+  - Reconciler: policy-free — acts on desired state as written, nothing more
+  - Every component communicates via the Event Bus only (no direct cross-package calls)
+  - Bus copy-on-read: lock released BEFORE any handler runs (deadlock prevention)
+  - HTTP API: bind 127.0.0.1 only — never 0.0.0.0 until auth is complete
 
 ---
 
@@ -190,8 +264,8 @@ BEFORE WRITING ANY CODE:
 4. Wait for approval — then code
 
 FILE NAMING (MANDATORY):
-  Format:  [project]__[feature]__[YYYYMMDD_HHMM].[ext]
-  Example: nexus__eventbus_core__20260311_1500.go
+  Format:  nexus_<package>_<filename>__<YYYYMMDD>_<HHMM>.go
+  Example: nexus_eventbus_bus__20260313_1100.go
   Line 1:  // @nexus-project: nexus
   Line 2:  // @nexus-path: internal/eventbus/bus.go
 
@@ -209,11 +283,13 @@ ARCHITECTURE RULES:
   - Projects register with Nexus via .nexus.yaml manifest
   - Clean Architecture: Domain → Application → Infrastructure
   - Every component communicates via the Event Bus only
+  - HTTP API binds to 127.0.0.1 only (never 0.0.0.0) until auth complete
 
 SECURITY:
   - Never log secrets or env values
   - Parameterized queries only
   - Validate all inputs at boundaries
+  - API key read from ~/.nexus/api_key — never hardcoded
 
 ---
 
@@ -240,7 +316,7 @@ Drop folder (Chrome downloads here):
 
 Nexus repo:
   main branch → always stable, always buildable
-  feature branches → feature/[component-name]
+  feature branches → phase<N>-<name>
   commit format → type: description
     types: feat | fix | docs | refactor | test | chore
 
@@ -299,3 +375,8 @@ Steps (3 minutes):
 2026-03-12 | [BUILD]     | Refactor complete — config pkg, WaitGroup shutdown, slog, dedup
 2026-03-12 | [SESSION]   | Added verify.sh + SESSION_KEY system — token-efficient AI sessions
 2026-03-12 | [BUILD]     | WORKFLOW build status corrected to reflect actual repo state at 885a15d
+2026-03-12 | [BUILD]     | Phase 3 complete — Docker/K8s/Process providers, logs+doctor CLI
+2026-03-13 | [BUILD]     | Phase 7 complete — 6 hardening fixes, 42 tests, branch phase7-hardened
+2026-03-13 | [BUILD]     | Phase 2 bugs fixed — pipeline.go field names, renamer ParseCanonicalName
+2026-03-13 | [WORKFLOW]  | v1.2.0 — updated to match architecture doc roadmap, Phase 8 active
+2026-03-13 | [RULES]     | FILE NAMING updated: nexus_<package>_<filename>__<YYYYMMDD>_<HHMM>.go
