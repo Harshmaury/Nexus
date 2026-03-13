@@ -61,7 +61,7 @@ func (r HealthCheckResult) IsHealthy() bool {
 // It is purely observational — it never changes desired state.
 // Only the reconciler changes state. HealthController feeds it data.
 type HealthController struct {
-	store     *state.Store
+	store     state.Storer
 	bus       *eventbus.Bus
 	events    *state.EventWriter
 	providers runtime.Providers
@@ -72,7 +72,7 @@ type HealthController struct {
 
 // HealthControllerConfig holds all dependencies for the HealthController.
 type HealthControllerConfig struct {
-	Store     *state.Store
+	Store     state.Storer
 	Bus       *eventbus.Bus
 	Providers runtime.Providers
 	Interval  time.Duration
@@ -218,7 +218,8 @@ func (h *HealthController) checkService(ctx context.Context, svc *state.Service)
 
 // ── HANDLE RESULT ────────────────────────────────────────────────────────────
 
-// handleResult persists the result and publishes events for state transitions.
+// handleResult logs the health metric and publishes events for state transitions.
+// It does NOT write actual_state — that is the reconciler Engine's sole responsibility.
 func (h *HealthController) handleResult(svc *state.Service, result HealthCheckResult) {
 	traceID := fmt.Sprintf("health-%s-%d", svc.ID, result.CheckedAt.UnixNano())
 
@@ -234,18 +235,12 @@ func (h *HealthController) handleResult(svc *state.Service, result HealthCheckRe
 		)
 	}
 
-	if result.Status == svc.ActualState {
-		return // no change — nothing to publish
-	}
-
-	if err := h.store.SetActualState(result.ServiceID, result.Status); err != nil {
-		_ = h.events.SystemAlert("warn",
-			fmt.Sprintf("failed to update actual state for %s: %v", result.ServiceID, err),
-			map[string]string{"service_id": result.ServiceID},
-		)
-		return
-	}
-
+	// HealthController never writes actual_state — the reconciler Engine is the
+	// sole owner of that column (Fix 06). Health controller responsibilities:
+	//   1. LogHealth  — persist the health metric (done above)
+	//   2. Publish events — so Engine and RecoveryController can react
+	// The reconciler detects the state change on its next tick via
+	// provider.IsRunning() and writes actual_state authoritatively.
 	switch result.Status {
 	case state.StateRunning:
 		if svc.ActualState == state.StateCrashed || svc.ActualState == state.StateRecovering {

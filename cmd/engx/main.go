@@ -1,35 +1,39 @@
 // @nexus-project: nexus
 // @nexus-path: cmd/engx/main.go
 // engx is the Nexus CLI — the developer-facing interface to the daemon.
-// It communicates with the state store directly for read operations,
-// and sets desired state for write operations (daemon reconciles).
 //
-// Changes from previous version:
-//   - Removed local expandHome() — now uses config.ExpandHome
-//   - Removed local defaultDBPath constant — now uses config.DefaultDBPath
-//   - Added import of internal/config
-//   - Removed unused "path/filepath" and "os" (expandHome needed them)
+// Fix 03 changes:
+//   - Removed openStore, buildProjectController, and all direct SQLite access.
+//   - CLI is now a pure thin socket client: every command sends a JSON request
+//     to the daemon over the Unix socket and renders the response.
+//   - register command now sends CmdRegisterProject to daemon (single writer).
+//   - --db flag removed (CLI no longer opens the database).
+//   - --socket flag added to override the Unix socket path.
+//
+// Data flow (all commands):
+//   engx → Unix socket → engxd dispatcher → controller/store → response → engx
 package main
 
 import (
-	"bufio"
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"bufio"
+	"time"
 
 	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/controllers"
-	"github.com/Harshmaury/Nexus/internal/eventbus"
+	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/spf13/cobra"
 )
 
-// ── CONSTANTS ────────────────────────────────────────────────────────────────
-
 const cliVersion = "0.1.0"
 
-// ── ENTRY POINT ──────────────────────────────────────────────────────────────
+// ── ENTRY POINT ───────────────────────────────────────────────────────────────
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -38,10 +42,10 @@ func main() {
 	}
 }
 
-// ── ROOT COMMAND ─────────────────────────────────────────────────────────────
+// ── ROOT COMMAND ──────────────────────────────────────────────────────────────
 
 func rootCmd() *cobra.Command {
-	var dbPath string
+	var socketPath string
 
 	root := &cobra.Command{
 		Use:   "engx",
@@ -54,29 +58,73 @@ GitHub: https://github.com/Harshmaury/Nexus`,
 	}
 
 	root.PersistentFlags().StringVar(
-		&dbPath, "db", config.ExpandHome(config.DefaultDBPath),
-		"path to nexus state database",
+		&socketPath, "socket", daemon.DefaultSocketPath,
+		"path to nexus daemon socket",
 	)
 
 	root.AddCommand(
-		projectCmd(&dbPath),
-		registerCmd(&dbPath),
-		servicesCmd(&dbPath),
-		eventsCmd(&dbPath),
+		projectCmd(&socketPath),
+		registerCmd(&socketPath),
+		servicesCmd(&socketPath),
+		eventsCmd(&socketPath),
 		versionCmd(),
 	)
 
 	return root
 }
 
-// ── REGISTER COMMAND ─────────────────────────────────────────────────────────
+// ── SOCKET CLIENT ─────────────────────────────────────────────────────────────
 
-func registerCmd(dbPath *string) *cobra.Command {
+// sendCommand opens a connection to the daemon socket, sends a request,
+// and returns the parsed response. All CLI commands use this — no direct DB.
+func sendCommand(socketPath string, cmd daemon.Command, params any) (*daemon.Response, error) {
+	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"cannot connect to Nexus daemon at %s\n  Is engxd running? Start it with: engxd",
+			socketPath,
+		)
+	}
+	defer conn.Close()
+
+	var rawParams json.RawMessage
+	if params != nil {
+		rawParams, err = json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("encode params: %w", err)
+		}
+	}
+
+	req := daemon.Request{
+		ID:      fmt.Sprintf("cli-%d", time.Now().UnixNano()),
+		Command: cmd,
+		Params:  rawParams,
+	}
+
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+
+	var resp daemon.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	if !resp.OK {
+		return nil, fmt.Errorf("%s", resp.Error)
+	}
+
+	return &resp, nil
+}
+
+// ── REGISTER COMMAND ──────────────────────────────────────────────────────────
+
+func registerCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "register <project-path>",
 		Short: "Register a project with Nexus",
-		Long: `Register reads .nexus.yaml from the project root and adds
-the project to the Nexus state database.
+		Long: `Register reads .nexus.yaml from the project root and sends
+the project metadata to the daemon, which writes it to the state store.
 
 Example .nexus.yaml:
   name: my-project
@@ -96,24 +144,20 @@ Example .nexus.yaml:
 				return err
 			}
 
-			store, err := openStore(dbPath)
-			if err != nil {
-				return err
-			}
-			defer store.Close()
-
-			project := &state.Project{
+			resp, err := sendCommand(*socketPath, daemon.CmdRegisterProject, daemon.RegisterProjectParams{
 				ID:          manifest.id,
 				Name:        manifest.name,
 				Path:        projectPath,
 				Language:    manifest.language,
 				ProjectType: manifest.projectType,
 				ConfigJSON:  manifest.rawYAML,
+			})
+			if err != nil {
+				return err
 			}
 
-			if err := store.RegisterProject(project); err != nil {
-				return fmt.Errorf("register project: %w", err)
-			}
+			var result map[string]string
+			_ = json.Unmarshal(resp.Data, &result)
 
 			fmt.Printf("✓ Registered project: %s\n", manifest.name)
 			fmt.Printf("  ID:       %s\n", manifest.id)
@@ -136,7 +180,6 @@ type nexusManifest struct {
 }
 
 // readNexusManifest parses .nexus.yaml with a simple line scanner.
-// We avoid a YAML dependency — the format is intentionally minimal.
 func readNexusManifest(projectPath string) (*nexusManifest, error) {
 	manifestPath := filepath.Join(projectPath, ".nexus.yaml")
 
@@ -200,9 +243,9 @@ func readNexusManifest(projectPath string) (*nexusManifest, error) {
 	return manifest, nil
 }
 
-// ── PROJECT COMMANDS ─────────────────────────────────────────────────────────
+// ── PROJECT COMMANDS ──────────────────────────────────────────────────────────
 
-func projectCmd(dbPath *string) *cobra.Command {
+func projectCmd(socketPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "project",
 		Short: "Manage entire projects as a unit",
@@ -213,15 +256,15 @@ func projectCmd(dbPath *string) *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		projectStartCmd(dbPath),
-		projectStopCmd(dbPath),
-		projectStatusCmd(dbPath),
+		projectStartCmd(socketPath),
+		projectStopCmd(socketPath),
+		projectStatusCmd(socketPath),
 	)
 
 	return cmd
 }
 
-func projectStartCmd(dbPath *string) *cobra.Command {
+func projectStartCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:     "start <project-id>",
 		Short:   "Start all services in a project",
@@ -229,33 +272,30 @@ func projectStartCmd(dbPath *string) *cobra.Command {
 		Example: `  engx project start ums`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectID := args[0]
+			fmt.Printf("Starting project: %s\n", projectID)
 
-			ctrl, cleanup, err := buildProjectController(dbPath)
+			resp, err := sendCommand(*socketPath, daemon.CmdProjectStart,
+				daemon.ProjectStartParams{ProjectID: projectID})
 			if err != nil {
 				return err
 			}
-			defer cleanup()
 
-			fmt.Printf("Starting project: %s\n", projectID)
+			var result map[string]any
+			_ = json.Unmarshal(resp.Data, &result)
 
-			count, err := ctrl.StartProject(projectID)
-			if err != nil {
-				return fmt.Errorf("start project: %w", err)
-			}
-
-			if count == 0 {
+			queued, _ := result["queued"].(float64)
+			if int(queued) == 0 {
 				fmt.Printf("✓ All services in %q already running\n", projectID)
 				return nil
 			}
-
-			fmt.Printf("✓ Queued %d service(s) to start — daemon will reconcile\n", count)
+			fmt.Printf("✓ Queued %d service(s) to start — daemon will reconcile\n", int(queued))
 			fmt.Printf("  Run: engx project status %s\n", projectID)
 			return nil
 		},
 	}
 }
 
-func projectStopCmd(dbPath *string) *cobra.Command {
+func projectStopCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:     "stop <project-id>",
 		Short:   "Stop all services in a project",
@@ -263,32 +303,29 @@ func projectStopCmd(dbPath *string) *cobra.Command {
 		Example: `  engx project stop ums`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectID := args[0]
+			fmt.Printf("Stopping project: %s\n", projectID)
 
-			ctrl, cleanup, err := buildProjectController(dbPath)
+			resp, err := sendCommand(*socketPath, daemon.CmdProjectStop,
+				daemon.ProjectStopParams{ProjectID: projectID})
 			if err != nil {
 				return err
 			}
-			defer cleanup()
 
-			fmt.Printf("Stopping project: %s\n", projectID)
+			var result map[string]any
+			_ = json.Unmarshal(resp.Data, &result)
 
-			count, err := ctrl.StopProject(projectID)
-			if err != nil {
-				return fmt.Errorf("stop project: %w", err)
-			}
-
-			if count == 0 {
+			queued, _ := result["queued"].(float64)
+			if int(queued) == 0 {
 				fmt.Printf("✓ All services in %q already stopped\n", projectID)
 				return nil
 			}
-
-			fmt.Printf("✓ Queued %d service(s) to stop\n", count)
+			fmt.Printf("✓ Queued %d service(s) to stop\n", int(queued))
 			return nil
 		},
 	}
 }
 
-func projectStatusCmd(dbPath *string) *cobra.Command {
+func projectStatusCmd(socketPath *string) *cobra.Command {
 	var showAll bool
 
 	cmd := &cobra.Command{
@@ -298,16 +335,25 @@ func projectStatusCmd(dbPath *string) *cobra.Command {
 		Example: `  engx project status ums
   engx project status --all`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctrl, cleanup, err := buildProjectController(dbPath)
+			projectID := ""
+			if len(args) > 0 {
+				projectID = args[0]
+			}
+
+			if !showAll && projectID == "" {
+				return fmt.Errorf("provide a project ID or use --all flag")
+			}
+
+			resp, err := sendCommand(*socketPath, daemon.CmdProjectStatus,
+				daemon.ProjectStatusParams{ProjectID: projectID})
 			if err != nil {
 				return err
 			}
-			defer cleanup()
 
-			if showAll {
-				statuses, err := ctrl.GetAllProjectsStatus()
-				if err != nil {
-					return fmt.Errorf("get all project statuses: %w", err)
+			if showAll || projectID == "" {
+				var statuses []*controllers.ProjectStatus
+				if err := json.Unmarshal(resp.Data, &statuses); err != nil {
+					return fmt.Errorf("decode response: %w", err)
 				}
 				if len(statuses) == 0 {
 					fmt.Println("No projects registered. Run: engx register <path>")
@@ -319,16 +365,11 @@ func projectStatusCmd(dbPath *string) *cobra.Command {
 				return nil
 			}
 
-			if len(args) == 0 {
-				return fmt.Errorf("provide a project ID or use --all flag")
+			var status controllers.ProjectStatus
+			if err := json.Unmarshal(resp.Data, &status); err != nil {
+				return fmt.Errorf("decode response: %w", err)
 			}
-
-			status, err := ctrl.GetProjectStatus(args[0])
-			if err != nil {
-				return fmt.Errorf("get project status: %w", err)
-			}
-
-			fmt.Print(renderStatus(status))
+			fmt.Print(renderStatus(&status))
 			return nil
 		},
 	}
@@ -337,7 +378,7 @@ func projectStatusCmd(dbPath *string) *cobra.Command {
 	return cmd
 }
 
-// ── RENDER STATUS ────────────────────────────────────────────────────────────
+// ── RENDER STATUS ─────────────────────────────────────────────────────────────
 
 func renderStatus(status *controllers.ProjectStatus) string {
 	var sb strings.Builder
@@ -385,22 +426,21 @@ func renderStatus(status *controllers.ProjectStatus) string {
 func colorGreen(s string) string { return "\033[32m" + s + "\033[0m" }
 func colorRed(s string) string   { return "\033[31m" + s + "\033[0m" }
 
-// ── SERVICES COMMAND ─────────────────────────────────────────────────────────
+// ── SERVICES COMMAND ──────────────────────────────────────────────────────────
 
-func servicesCmd(dbPath *string) *cobra.Command {
+func servicesCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "services",
 		Short: "List all registered services",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(dbPath)
+			resp, err := sendCommand(*socketPath, daemon.CmdServicesList, nil)
 			if err != nil {
 				return err
 			}
-			defer store.Close()
 
-			services, err := store.GetAllServices()
-			if err != nil {
-				return fmt.Errorf("get services: %w", err)
+			var services []*state.Service
+			if err := json.Unmarshal(resp.Data, &services); err != nil {
+				return fmt.Errorf("decode response: %w", err)
 			}
 
 			if len(services) == 0 {
@@ -426,24 +466,24 @@ func servicesCmd(dbPath *string) *cobra.Command {
 	}
 }
 
-// ── EVENTS COMMAND ───────────────────────────────────────────────────────────
+// ── EVENTS COMMAND ────────────────────────────────────────────────────────────
 
-func eventsCmd(dbPath *string) *cobra.Command {
+func eventsCmd(socketPath *string) *cobra.Command {
 	var limit int
 
 	cmd := &cobra.Command{
 		Use:   "events",
 		Short: "Show recent platform events",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openStore(dbPath)
+			resp, err := sendCommand(*socketPath, daemon.CmdEventsList,
+				daemon.EventsListParams{Limit: limit})
 			if err != nil {
 				return err
 			}
-			defer store.Close()
 
-			events, err := store.GetRecentEvents(limit)
-			if err != nil {
-				return fmt.Errorf("get events: %w", err)
+			var events []*state.Event
+			if err := json.Unmarshal(resp.Data, &events); err != nil {
+				return fmt.Errorf("decode response: %w", err)
 			}
 
 			if len(events) == 0 {
@@ -477,7 +517,7 @@ func eventsCmd(dbPath *string) *cobra.Command {
 	return cmd
 }
 
-// ── VERSION COMMAND ──────────────────────────────────────────────────────────
+// ── VERSION COMMAND ───────────────────────────────────────────────────────────
 
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
@@ -490,30 +530,6 @@ func versionCmd() *cobra.Command {
 	}
 }
 
-// ── HELPERS ──────────────────────────────────────────────────────────────────
-
-func buildProjectController(dbPath *string) (*controllers.ProjectController, func(), error) {
-	store, err := openStore(dbPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	bus := eventbus.New()
-	ctrl := controllers.NewProjectController(store, bus)
-	cleanup := func() { store.Close() }
-	return ctrl, cleanup, nil
-}
-
-func openStore(dbPath *string) (*state.Store, error) {
-	path := config.ExpandHome(*dbPath) // uses config.ExpandHome — no local duplicate
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create database directory %s: %w", dir, err)
-	}
-
-	store, err := state.New(path)
-	if err != nil {
-		return nil, fmt.Errorf("open state store at %s: %w", path, err)
-	}
-	return store, nil
-}
+// keep config import used (ExpandHome no longer needed here but
+// config is still imported transitively — remove unused import guard)
+var _ = config.DefaultDBPath

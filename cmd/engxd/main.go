@@ -196,6 +196,11 @@ func run(logger *log.Logger) error {
 
 	// Wait for all goroutines to finish in-flight work before closing the store.
 	// config.ShutdownTimeout replaces the former local shutdownTimeout constant.
+	// Wait for all PublishAsync goroutines to finish before components stop.
+	// This ensures in-flight recovery handlers complete their store writes
+	// before the WaitGroup drains and store.Close() fires.
+	bus.Wait()
+
 	logger.Printf("waiting up to %s for components to stop", config.ShutdownTimeout)
 
 	done := make(chan struct{})

@@ -59,7 +59,7 @@ type RecoveryDecision struct {
 // Back-off state is persisted in the store (restart_after column) so that
 // daemon restarts during a back-off window still honour the delay.
 type RecoveryController struct {
-	store     *state.Store
+	store     state.Storer
 	bus       *eventbus.Bus
 	events    *state.EventWriter
 	subID     string
@@ -67,7 +67,7 @@ type RecoveryController struct {
 }
 
 // NewRecoveryController creates a RecoveryController and subscribes to the bus.
-func NewRecoveryController(store *state.Store, bus *eventbus.Bus) *RecoveryController {
+func NewRecoveryController(store state.Storer, bus *eventbus.Bus) *RecoveryController {
 	rc := &RecoveryController{
 		store:     store,
 		bus:       bus,

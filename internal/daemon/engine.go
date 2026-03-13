@@ -67,7 +67,7 @@ func (r *ReconcileResult) Summary() string {
 // It runs a tight loop, comparing desired vs actual state,
 // and calling the correct Provider to fix any mismatch.
 type Engine struct {
-	store     *state.Store
+	store     state.Storer
 	bus       *eventbus.Bus
 	events    *state.EventWriter
 	providers runtime.Providers
@@ -78,7 +78,7 @@ type Engine struct {
 
 // EngineConfig holds all dependencies for the Engine.
 type EngineConfig struct {
-	Store     *state.Store
+	Store     state.Storer
 	Bus       *eventbus.Bus
 	Providers runtime.Providers
 	Interval  time.Duration
@@ -213,19 +213,6 @@ func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycle
 // ── RECONCILE START / STOP ───────────────────────────────────────────────────
 
 func (e *Engine) reconcileStart(ctx context.Context, svc *state.Service, traceID string, result *ReconcileResult) string {
-	// NOTE: maintenance threshold check owned by recovery controller (phase 2).
-	// Engine defers to recovery controller via the event bus.
-	// This block is a temporary guard until recovery controller is the sole owner.
-	failures, err := e.store.GetRecentFailures(svc.ID, config.MaintenanceWindowMinutes)
-	if err == nil && failures >= config.MaintenanceFailureThreshold {
-		e.setActualStateSafe(svc.ID, state.StateMaintenance, traceID)
-		e.bus.Publish(eventbus.TopicSystemAlert, svc.ID, eventbus.AlertPayload{
-			Severity: "critical",
-			Message:  fmt.Sprintf("%s exceeded failure threshold — maintenance mode", svc.ID),
-		})
-		return "maintenance"
-	}
-
 	if err := e.startService(ctx, svc, traceID); err != nil {
 		e.store.IncrementFailCount(svc.ID) //nolint:errcheck — best-effort counter
 		e.setActualStateSafe(svc.ID, state.StateCrashed, traceID)

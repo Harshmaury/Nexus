@@ -45,13 +45,13 @@ type ServiceStatus struct {
 // It never starts/stops services directly — it only sets desired state.
 // The daemon reconciler reads desired state and acts on it.
 type ProjectController struct {
-	store  *state.Store
+	store  state.Storer
 	bus    *eventbus.Bus
 	events *state.EventWriter
 }
 
 // NewProjectController creates a ProjectController with required dependencies.
-func NewProjectController(store *state.Store, bus *eventbus.Bus) *ProjectController {
+func NewProjectController(store state.Storer, bus *eventbus.Bus) *ProjectController {
 	return &ProjectController{
 		store:  store,
 		bus:    bus,

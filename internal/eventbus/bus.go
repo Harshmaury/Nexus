@@ -14,6 +14,7 @@ package eventbus
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -66,7 +67,9 @@ type Bus struct {
 	mu            sync.RWMutex
 	subscriptions map[Topic][]*subscription
 	errorHandler  func(topic Topic, handlerID string, err error)
-	eventCounter  uint64
+	wg            sync.WaitGroup // tracks in-flight PublishAsync goroutines
+	eventCounter  atomic.Uint64  // monotonic counter for event IDs
+	subCounter    atomic.Uint64  // monotonic counter for subscription IDs
 }
 
 // New creates a new Bus with a default error handler that prints to stderr.
@@ -93,7 +96,7 @@ func (b *Bus) Subscribe(topic Topic, handler Handler) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	id := generateSubscriptionID(topic)
+	id := b.generateSubscriptionID(topic)
 	sub := &subscription{id: id, topic: topic, handler: handler}
 	b.subscriptions[topic] = append(b.subscriptions[topic], sub)
 	return id
@@ -152,8 +155,15 @@ func (b *Bus) Publish(topic Topic, serviceID string, payload any) {
 // PublishAsync sends an event in a new goroutine so the caller is never blocked.
 // Used for TopicServiceCrashed and TopicRecoveryNeeded where the recovery handler
 // involves store reads/writes and must not block the health polling loop.
+//
+// Fix 04: goroutine is tracked in b.wg so Bus.Wait() can block until all
+// async handlers complete before the store is closed on shutdown.
 func (b *Bus) PublishAsync(topic Topic, serviceID string, payload any) {
-	go b.Publish(topic, serviceID, payload)
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		b.Publish(topic, serviceID, payload)
+	}()
 }
 
 // ── TYPED PAYLOADS ───────────────────────────────────────────────────────────
@@ -216,6 +226,13 @@ type DropApprovalPayload struct {
 	Method      string  // detection method used
 }
 
+// Wait blocks until all goroutines spawned by PublishAsync have completed.
+// Call this during shutdown before closing the state store to ensure
+// in-flight recovery handlers finish their DB writes cleanly.
+func (b *Bus) Wait() {
+	b.wg.Wait()
+}
+
 // ── INTROSPECTION ────────────────────────────────────────────────────────────
 
 // SubscriberCount returns how many handlers are registered for a topic.
@@ -249,15 +266,16 @@ func (b *Bus) Reset() {
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
 func (b *Bus) nextEventID() string {
-	b.mu.Lock()
-	b.eventCounter++
-	n := b.eventCounter
-	b.mu.Unlock()
-	return fmt.Sprintf("evt-%d-%d", time.Now().UnixNano(), n)
+	n := b.eventCounter.Add(1)
+	return fmt.Sprintf("evt-%d", n)
 }
 
-func generateSubscriptionID(topic Topic) string {
-	return fmt.Sprintf("sub-%s-%d", topic, time.Now().UnixNano())
+// generateSubscriptionID returns a guaranteed-unique ID for a subscription.
+// Uses an atomic monotonic counter — collision-proof even under concurrent
+// Subscribe() calls on modern hardware where UnixNano() can repeat.
+func (b *Bus) generateSubscriptionID(topic Topic) string {
+	n := b.subCounter.Add(1)
+	return fmt.Sprintf("sub-%s-%d", topic, n)
 }
 
 func copySlice(src []*subscription) []*subscription {

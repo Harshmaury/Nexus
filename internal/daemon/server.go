@@ -1,9 +1,13 @@
 // @nexus-project: nexus
 // @nexus-path: internal/daemon/server.go
-// Package daemon — Server listens on a Unix domain socket and handles
-// requests from the engx CLI. The CLI never talks to the state store directly
-// in production — it sends requests to the daemon via this socket.
-// Protocol: newline-delimited JSON. Request → Response, one round trip.
+// Server listens on a Unix domain socket and handles requests from the engx CLI.
+// Protocol: newline-delimited JSON. One Request → one Response per connection.
+//
+// Fix 03 changes:
+//   - store field changed from *state.Store → state.Storer (consistent with Fix 02)
+//   - ServerConfig.Store changed from *state.Store → state.Storer
+//   - Added CmdRegisterProject command + RegisterProjectParams
+//     CLI register command now routes through daemon instead of writing SQLite directly
 package daemon
 
 import (
@@ -20,45 +24,48 @@ import (
 	"github.com/Harshmaury/Nexus/internal/state"
 )
 
-// ── CONSTANTS ────────────────────────────────────────────────────────────────
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
 
 const (
 	DefaultSocketPath    = "/tmp/engx.sock"
 	requestReadTimeout   = 10 * time.Second
 	responseWriteTimeout = 10 * time.Second
-	maxRequestBytes      = 64 * 1024 // 64KB — no single request should exceed this
+	maxRequestBytes      = 64 * 1024 // 64KB
 )
 
-// ── PROTOCOL ─────────────────────────────────────────────────────────────────
+// ── PROTOCOL ──────────────────────────────────────────────────────────────────
 
 // Command is the action the CLI wants the daemon to perform.
 type Command string
 
 const (
-	CmdProjectStart  Command = "project.start"
-	CmdProjectStop   Command = "project.stop"
-	CmdProjectStatus Command = "project.status"
-	CmdProjectList   Command = "project.list"
-	CmdServicesList  Command = "services.list"
-	CmdEventsList    Command = "events.list"
-	CmdPing          Command = "ping"
+	CmdProjectStart     Command = "project.start"
+	CmdProjectStop      Command = "project.stop"
+	CmdProjectStatus    Command = "project.status"
+	CmdProjectList      Command = "project.list"
+	CmdServicesList     Command = "services.list"
+	CmdEventsList       Command = "events.list"
+	CmdRegisterProject  Command = "project.register"
+	CmdPing             Command = "ping"
 )
 
 // Request is a message from the CLI to the daemon.
 type Request struct {
-	ID      string          `json:"id"`      // client-generated request ID for correlation
+	ID      string          `json:"id"`
 	Command Command         `json:"command"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
 // Response is a message from the daemon back to the CLI.
 type Response struct {
-	ID      string          `json:"id"`               // mirrors request ID
+	ID      string          `json:"id"`
 	OK      bool            `json:"ok"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	Error   string          `json:"error,omitempty"`
-	Elapsed string          `json:"elapsed,omitempty"` // human-readable duration
+	Elapsed string          `json:"elapsed,omitempty"`
 }
+
+// ── PARAM TYPES ───────────────────────────────────────────────────────────────
 
 // ProjectStartParams are the params for CmdProjectStart.
 type ProjectStartParams struct {
@@ -80,12 +87,23 @@ type EventsListParams struct {
 	Limit int `json:"limit"` // defaults to 20
 }
 
-// ── SERVER ───────────────────────────────────────────────────────────────────
+// RegisterProjectParams are the params for CmdRegisterProject.
+// All fields mirror state.Project — the daemon owns the write.
+type RegisterProjectParams struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Language    string `json:"language"`
+	ProjectType string `json:"project_type"`
+	ConfigJSON  string `json:"config_json"`
+}
+
+// ── SERVER ────────────────────────────────────────────────────────────────────
 
 // Server listens on a Unix socket and dispatches CLI requests.
 type Server struct {
 	socketPath  string
-	store       *state.Store
+	store       state.Storer
 	bus         *eventbus.Bus
 	projectCtrl *controllers.ProjectController
 	listener    net.Listener
@@ -94,7 +112,7 @@ type Server struct {
 // ServerConfig holds all dependencies for the Server.
 type ServerConfig struct {
 	SocketPath  string
-	Store       *state.Store
+	Store       state.Storer
 	Bus         *eventbus.Bus
 	ProjectCtrl *controllers.ProjectController
 }
@@ -113,110 +131,82 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 }
 
-// ── RUN ──────────────────────────────────────────────────────────────────────
+// ── RUN ───────────────────────────────────────────────────────────────────────
 
 // Run starts the Unix socket listener and blocks until ctx is cancelled.
-// Removes any stale socket file from a previous run before listening.
 func (s *Server) Run(ctx context.Context) error {
-	// Remove stale socket from previous daemon run.
 	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stale socket %s: %w", s.socketPath, err)
+		return fmt.Errorf("remove stale socket: %w", err)
 	}
 
-	listener, err := net.Listen("unix", s.socketPath)
+	ln, err := net.Listen("unix", s.socketPath)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.socketPath, err)
 	}
-	s.listener = listener
-	defer s.cleanup()
-
-	// Accept connections until context is cancelled.
-	connCh := make(chan net.Conn)
-	errCh := make(chan error, 1)
+	s.listener = ln
+	defer ln.Close()
 
 	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				errCh <- err
-				return
-			}
-			connCh <- conn
-		}
+		<-ctx.Done()
+		ln.Close()
 	}()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case err := <-errCh:
-			// Listener closed — normal shutdown.
+		conn, err := ln.Accept()
+		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return nil // clean shutdown
 			}
 			return fmt.Errorf("accept: %w", err)
-		case conn := <-connCh:
-			// Each connection handled in its own goroutine.
-			go s.handleConnection(conn)
 		}
+		go s.handleConn(conn)
 	}
-}
-
-// SocketPath returns the path this server is listening on.
-func (s *Server) SocketPath() string {
-	return s.socketPath
 }
 
 // ── CONNECTION HANDLER ────────────────────────────────────────────────────────
 
-// handleConnection reads one request, dispatches it, writes one response.
-// Protocol is intentionally simple: one request per connection.
-func (s *Server) handleConnection(conn net.Conn) {
+func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
-
 	start := time.Now()
 
-	// Read request with timeout.
-	_ = conn.SetReadDeadline(time.Now().Add(requestReadTimeout))
-
+	conn.SetReadDeadline(time.Now().Add(requestReadTimeout))
 	limited := io.LimitReader(conn, maxRequestBytes)
-	decoder := json.NewDecoder(limited)
 
 	var req Request
-	if err := decoder.Decode(&req); err != nil {
-		s.writeResponse(conn, Response{
-			OK:    false,
-			Error: fmt.Sprintf("decode request: %v", err),
-		})
+	if err := json.NewDecoder(limited).Decode(&req); err != nil {
+		s.writeError(conn, "", fmt.Sprintf("decode request: %v", err), start)
 		return
 	}
 
-	// Dispatch to handler.
-	data, handlerErr := s.dispatch(req)
+	data, err := s.dispatch(req)
+	conn.SetWriteDeadline(time.Now().Add(responseWriteTimeout))
 
-	elapsed := time.Since(start).Round(time.Millisecond).String()
-
-	if handlerErr != nil {
-		s.writeResponse(conn, Response{
-			ID:      req.ID,
-			OK:      false,
-			Error:   handlerErr.Error(),
-			Elapsed: elapsed,
-		})
+	if err != nil {
+		s.writeError(conn, req.ID, err.Error(), start)
 		return
 	}
 
-	s.writeResponse(conn, Response{
+	resp := Response{
 		ID:      req.ID,
 		OK:      true,
 		Data:    data,
-		Elapsed: elapsed,
-	})
+		Elapsed: time.Since(start).Round(time.Millisecond).String(),
+	}
+	json.NewEncoder(conn).Encode(resp) //nolint:errcheck — best-effort write
+}
+
+func (s *Server) writeError(conn net.Conn, id, msg string, start time.Time) {
+	resp := Response{
+		ID:      id,
+		OK:      false,
+		Error:   msg,
+		Elapsed: time.Since(start).Round(time.Millisecond).String(),
+	}
+	json.NewEncoder(conn).Encode(resp) //nolint:errcheck
 }
 
 // ── DISPATCH ─────────────────────────────────────────────────────────────────
 
-// dispatch routes a request to the correct handler and returns JSON data.
 func (s *Server) dispatch(req Request) (json.RawMessage, error) {
 	switch req.Command {
 
@@ -266,7 +256,6 @@ func (s *Server) dispatch(req Request) (json.RawMessage, error) {
 			return nil, fmt.Errorf("parse params: %w", err)
 		}
 		if params.ProjectID == "" {
-			// All projects.
 			statuses, err := s.projectCtrl.GetAllProjectsStatus()
 			if err != nil {
 				return nil, err
@@ -308,30 +297,43 @@ func (s *Server) dispatch(req Request) (json.RawMessage, error) {
 		}
 		return jsonMarshal(events)
 
+	case CmdRegisterProject:
+		// The daemon owns all writes. CLI sends parsed manifest fields;
+		// daemon calls store.RegisterProject — single writer, no dual-SQLite risk.
+		var params RegisterProjectParams
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return nil, fmt.Errorf("parse params: %w", err)
+		}
+		if params.ID == "" || params.Name == "" {
+			return nil, fmt.Errorf("id and name are required")
+		}
+		project := &state.Project{
+			ID:          params.ID,
+			Name:        params.Name,
+			Path:        params.Path,
+			Language:    params.Language,
+			ProjectType: params.ProjectType,
+			ConfigJSON:  params.ConfigJSON,
+		}
+		if err := s.store.RegisterProject(project); err != nil {
+			return nil, fmt.Errorf("register project: %w", err)
+		}
+		return jsonMarshal(map[string]string{
+			"id":   params.ID,
+			"name": params.Name,
+		})
+
 	default:
 		return nil, fmt.Errorf("unknown command %q", req.Command)
 	}
 }
 
-// ── HELPERS ──────────────────────────────────────────────────────────────────
-
-func (s *Server) writeResponse(conn net.Conn, resp Response) {
-	_ = conn.SetWriteDeadline(time.Now().Add(responseWriteTimeout))
-	encoder := json.NewEncoder(conn)
-	_ = encoder.Encode(resp)
-}
-
-func (s *Server) cleanup() {
-	if s.listener != nil {
-		_ = s.listener.Close()
-	}
-	_ = os.Remove(s.socketPath)
-}
+// ── HELPERS ───────────────────────────────────────────────────────────────────
 
 func jsonMarshal(v any) (json.RawMessage, error) {
-	data, err := json.Marshal(v)
+	b, err := json.Marshal(v)
 	if err != nil {
-		return nil, fmt.Errorf("marshal response data: %w", err)
+		return nil, fmt.Errorf("marshal response: %w", err)
 	}
-	return json.RawMessage(data), nil
+	return b, nil
 }

@@ -17,12 +17,12 @@ import (
 // Every component that emits events holds an EventWriter, not a raw Store.
 // This ensures source and trace IDs are always set correctly.
 type EventWriter struct {
-	store  *Store
+	store  Storer
 	source EventSource
 }
 
 // NewEventWriter creates an EventWriter bound to a specific source component.
-func NewEventWriter(store *Store, source EventSource) *EventWriter {
+func NewEventWriter(store Storer, source EventSource) *EventWriter {
 	return &EventWriter{store: store, source: source}
 }
 
