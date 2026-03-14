@@ -16,6 +16,10 @@ import (
 
 // DefaultDBPath is the default location of the Nexus SQLite state file.
 const DefaultDBPath = "~/.nexus/nexus.db"
+// DefaultHTTPAddr is the default listen address for the Phase 8 HTTP API.
+// Override with the NEXUS_HTTP_ADDR environment variable.
+const DefaultHTTPAddr = ":8080"
+
 
 // EnvOrDefault returns the value of the environment variable key,
 // or fallback if the variable is unset or empty.

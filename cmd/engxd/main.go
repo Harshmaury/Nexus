@@ -13,6 +13,11 @@
 //   - Added sync.WaitGroup so shutdown waits for all goroutines to exit before
 //     the deferred store.Close() fires. Prevents in-flight DB writes being cut off.
 //
+// Phase 8 addition:
+//   - HTTP/JSON API server added as component 8.
+//     Runs alongside the Unix socket server — same context, same controllers.
+//     Listen address: NEXUS_HTTP_ADDR env var (default :8080).
+//
 // Component startup order:
 //  1. State store (SQLite)
 //  2. Event bus
@@ -20,7 +25,8 @@
 //  4. Controllers (project, health, recovery)
 //  5. Reconciler engine
 //  6. Unix socket server
-//  7. Result logger (reads engine + health + recovery channels)
+//  7. HTTP API server
+//  8. Result logger (reads engine + health + recovery channels)
 package main
 
 import (
@@ -32,6 +38,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/Harshmaury/Nexus/internal/api"
 	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/daemon"
@@ -120,6 +127,15 @@ func run(logger *log.Logger) error {
 		ProjectCtrl: projectCtrl,
 	})
 
+	// ── 7. HTTP API SERVER ───────────────────────────────────────────────────
+	httpAddr := config.EnvOrDefault("NEXUS_HTTP_ADDR", config.DefaultHTTPAddr)
+	apiServer := api.NewServer(api.ServerConfig{
+		Addr:        httpAddr,
+		Store:       store,
+		ProjectCtrl: projectCtrl,
+		Logger:      logger,
+	})
+
 	// ── CONTEXT + SIGNAL HANDLING ─────────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -130,7 +146,7 @@ func run(logger *log.Logger) error {
 	// wg.Wait() is called before store.Close(). This guarantees in-flight DB
 	// writes from any goroutine complete before the connection is torn down.
 	var wg sync.WaitGroup
-	errCh := make(chan error, 5)
+	errCh := make(chan error, 6)
 
 	// ── 7. START ALL GOROUTINES ───────────────────────────────────────────────
 
@@ -175,6 +191,16 @@ func run(logger *log.Logger) error {
 		}
 	}()
 
+	// HTTP API server
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		logger.Printf("HTTP API server started: %s", httpAddr)
+		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {
+			errCh <- fmt.Errorf("http api server: %w", err)
+		}
+	}()
+
 	// Result logger — drains engine, health, and recovery channels.
 	wg.Add(1)
 	go func() {
@@ -182,7 +208,7 @@ func run(logger *log.Logger) error {
 		logResults(ctx, logger, engine, healthCtrl, recoveryCtrl)
 	}()
 
-	logger.Printf("✓ Nexus daemon ready — socket=%s db=%s", socketPath, dbPath)
+	logger.Printf("✓ Nexus daemon ready — socket=%s http=%s db=%s", socketPath, httpAddr, dbPath)
 
 	// ── WAIT FOR SHUTDOWN SIGNAL ──────────────────────────────────────────────
 	select {
