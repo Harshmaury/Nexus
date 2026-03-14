@@ -4,36 +4,36 @@
 // routes files to their destination, prompts the user, or tags and leaves them.
 // It owns all routing policy — detector only scores, router decides.
 //
-// Phase 7.6 change — removed blocking stdin read from promptRoute:
+// Fix changes:
 //
-//   Previously: promptRoute() called bufio.NewReader(os.Stdin).ReadString('\n').
-//   Problem:    The daemon runs in the background (stdin = /dev/null). The read
-//               blocks forever, permanently hanging that goroutine. Every file
-//               in the 0.40–0.79 confidence range silently disappeared.
+//   1. NewRouter now takes state.Storer (interface) instead of *state.Store
+//      (concrete type). Consistent with every other component in the codebase.
+//      Enables testing with mock stores.
 //
-//   Now:        promptRoute() publishes TopicDropPendingApproval to the event bus
-//               with full routing details and returns RouteActionPrompted.
-//               The CLI (engx) subscribes to this topic (or polls the socket)
-//               and presents the confirmation interactively.
-//               The intelligence pipeline is non-blocking.
+//   2. Removed notifyWindowsToast which called powershell.exe from the daemon.
+//      The daemon runs in WSL Ubuntu — powershell.exe is not on the standard
+//      PATH and the call failed silently on every invocation (error discarded
+//      via _ = cmd.Run()). This also violated Constraint #9 (environment-agnostic).
 //
-//   New CLI commands to implement (Phase 8): engx drop approve <file>, engx drop reject <file>
-//   These send CmdDropApprove / CmdDropReject commands to the Unix socket server.
+//      Replaced with a Notifier interface (see notifier.go). Router receives
+//      a Notifier at construction time. NewRouter uses NewDefaultNotifier()
+//      which returns the correct implementation for the current environment:
+//      notify-send on Linux, terminal fallback if no display is available.
 //
-// Security note on notifyWindowsToast:
-//   Title and message are base64-encoded UTF-16LE and passed as -EncodedCommand.
-//   User-controlled data (filename, project ID) never appears in the script string.
+//      The Windows toast code is not lost — it can be added as a
+//      WindowsNotifier implementation when Nexus gains native Windows support.
+//
+//   3. Phase 7.6 promptRoute change retained:
+//      promptRoute() publishes TopicDropPendingApproval to the event bus
+//      instead of blocking on stdin. The CLI handles the interactive prompt.
 package intelligence
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
-	"unicode/utf16"
 
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
@@ -86,14 +86,23 @@ type Router struct {
 	resolver ProjectResolver
 	bus      *eventbus.Bus
 	events   *state.EventWriter
+	notifier Notifier
 }
 
 // NewRouter creates a Router with required dependencies.
-func NewRouter(resolver ProjectResolver, bus *eventbus.Bus, store *state.Store) *Router {
+//
+// store is state.Storer (interface) — consistent with all other components.
+// notifier handles OS-level desktop notifications — pass NewDefaultNotifier()
+// for production, NullNotifier for tests.
+func NewRouter(resolver ProjectResolver, bus *eventbus.Bus, store state.Storer, notifier Notifier) *Router {
+	if notifier == nil {
+		notifier = &NullNotifier{}
+	}
 	return &Router{
 		resolver: resolver,
 		bus:      bus,
 		events:   state.NewEventWriter(store, state.SourceDropSystem),
+		notifier: notifier,
 	}
 }
 
@@ -137,7 +146,17 @@ func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, resul
 	result.Action = RouteActionMoved
 
 	r.notifyTerminal(detection, destination)
-	go r.notifyWindowsToast(detection, destination)
+
+	// Non-blocking notification — uses Notifier interface (not powershell.exe).
+	// NewDefaultNotifier returns the correct implementation for the environment.
+	go r.notifier.Notify(
+		"Nexus Drop — "+detection.ProjectID,
+		fmt.Sprintf("%s → %s (%.0f%%)",
+			filepath.Base(detection.FilePath),
+			filepath.Base(destination),
+			detection.Confidence*100,
+		),
+	)
 
 	r.bus.Publish(eventbus.TopicFileRouted, "drop", eventbus.FileRoutedPayload{
 		OriginalName: filepath.Base(detection.FilePath),
@@ -165,10 +184,7 @@ func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, resul
 
 // promptRoute handles the 0.40–0.79 confidence range.
 //
-// Previously: blocked on bufio.NewReader(os.Stdin).ReadString('\n') — which hangs
-// forever when the daemon's stdin is /dev/null (its normal operating mode).
-//
-// Now: publishes TopicDropPendingApproval to the event bus. The CLI engx watches
+// Publishes TopicDropPendingApproval to the event bus. The CLI engx watches
 // the socket for this event and presents the interactive approval prompt to the user.
 // The pipeline returns immediately with RouteActionPrompted.
 func (r *Router) promptRoute(ctx context.Context, detection DetectionResult, result RouteResult) (RouteResult, error) {
@@ -234,6 +250,14 @@ func (r *Router) resolveDestination(detection DetectionResult) (string, error) {
 	return filepath.Join(projectPath, filepath.Base(detection.FilePath)), nil
 }
 
+func (r *Router) notifyTerminal(detection DetectionResult, destination string) {
+	fmt.Printf("\n\033[32m[NEXUS DROP]\033[0m Auto-routed\n")
+	fmt.Printf("  File:        %s\n", filepath.Base(detection.FilePath))
+	fmt.Printf("  Project:     %s\n", detection.ProjectID)
+	fmt.Printf("  Destination: %s\n", destination)
+	fmt.Printf("  Confidence:  %.0f%%  (%s)\n\n", detection.Confidence*100, detection.Method)
+}
+
 func moveFile(src string, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
@@ -275,49 +299,4 @@ func copyFile(src string, dst string) error {
 		}
 	}
 	return nil
-}
-
-func (r *Router) notifyTerminal(detection DetectionResult, destination string) {
-	fmt.Printf("\n\033[32m[NEXUS DROP]\033[0m Auto-routed\n")
-	fmt.Printf("  File:        %s\n", filepath.Base(detection.FilePath))
-	fmt.Printf("  Project:     %s\n", detection.ProjectID)
-	fmt.Printf("  Destination: %s\n", destination)
-	fmt.Printf("  Confidence:  %.0f%%  (%s)\n\n", detection.Confidence*100, detection.Method)
-}
-
-func (r *Router) notifyWindowsToast(detection DetectionResult, destination string) {
-	title := "Nexus Drop \u2014 " + detection.ProjectID
-	message := fmt.Sprintf("%s \u2192 %s (%.0f%%)",
-		filepath.Base(detection.FilePath),
-		filepath.Base(destination),
-		detection.Confidence*100,
-	)
-
-	const psScript = `
-		[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-		$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-		$template.GetElementsByTagName('text')[0].AppendChild($template.CreateTextNode($env:NEXUS_TITLE)) | Out-Null
-		$template.GetElementsByTagName('text')[1].AppendChild($template.CreateTextNode($env:NEXUS_MSG)) | Out-Null
-		$toast = [Windows.UI.Notifications.ToastNotification]::new($template)
-		[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Nexus').Show($toast)
-	`
-
-	encoded := encodePS(psScript)
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
-	cmd.Env = append(os.Environ(),
-		"NEXUS_TITLE="+title,
-		"NEXUS_MSG="+message,
-	)
-	_ = cmd.Run()
-}
-
-func encodePS(script string) string {
-	runes := []rune(script)
-	utf16Encoded := utf16.Encode(runes)
-	bytes := make([]byte, len(utf16Encoded)*2)
-	for i, r := range utf16Encoded {
-		bytes[i*2] = byte(r)
-		bytes[i*2+1] = byte(r >> 8)
-	}
-	return base64.StdEncoding.EncodeToString(bytes)
 }

@@ -2,7 +2,7 @@
 // @nexus-path: cmd/engx/main.go
 // engx is the Nexus CLI — the developer-facing interface to the daemon.
 //
-// Fix 03 changes:
+// Fix 03 changes (retained from previous version):
 //   - Removed openStore, buildProjectController, and all direct SQLite access.
 //   - CLI is now a pure thin socket client: every command sends a JSON request
 //     to the daemon over the Unix socket and renders the response.
@@ -10,21 +10,26 @@
 //   - --db flag removed (CLI no longer opens the database).
 //   - --socket flag added to override the Unix socket path.
 //
+// Fix (this version):
+//   - Removed dead `config` import. The CLI is a pure socket client and has
+//     no use for the config package. The previous `var _ = config.DefaultDBPath`
+//     sentinel existed only to suppress the unused import compiler error.
+//     Both lines removed.
+//
 // Data flow (all commands):
 //   engx → Unix socket → engxd dispatcher → controller/store → response → engx
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"bufio"
 	"time"
 
-	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/state"
@@ -529,7 +534,3 @@ func versionCmd() *cobra.Command {
 		},
 	}
 }
-
-// keep config import used (ExpandHome no longer needed here but
-// config is still imported transitively — remove unused import guard)
-var _ = config.DefaultDBPath

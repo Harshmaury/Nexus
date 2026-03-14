@@ -3,6 +3,10 @@
 // DropLogger writes every routing decision to the download_log table.
 // It is the audit trail for the Drop Intelligence system —
 // every file that passes through the pipeline is recorded here.
+//
+// Fix: DropLogger.store and NewDropLogger now use state.Storer (interface)
+// instead of *state.Store (concrete type). Consistent with all other
+// components. The store can now be mocked in tests without SQLite.
 package intelligence
 
 import (
@@ -29,12 +33,14 @@ type DropLogEntry struct {
 // ── DROP LOGGER ───────────────────────────────────────────────────────────────
 
 // DropLogger writes download log entries to the state store.
+// store is state.Storer (interface) — not *state.Store (concrete type).
 type DropLogger struct {
-	store *state.Store
+	store state.Storer
 }
 
 // NewDropLogger creates a DropLogger backed by the state store.
-func NewDropLogger(store *state.Store) *DropLogger {
+// store is state.Storer (interface) to allow mock stores in tests.
+func NewDropLogger(store state.Storer) *DropLogger {
 	return &DropLogger{store: store}
 }
 

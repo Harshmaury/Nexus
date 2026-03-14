@@ -4,6 +4,9 @@
 // It subscribes to TopicFileDropped events from the watcher,
 // runs detection, renames if needed, routes the file, and logs the result.
 // It is the only component that knows about all four stages.
+//
+// Fix: PipelineConfig.Store is now state.Storer (interface) instead of
+// *state.Store (concrete type). Consistent with all other components.
 package intelligence
 
 import (
@@ -34,13 +37,14 @@ type Pipeline struct {
 }
 
 // PipelineConfig holds all dependencies for the Pipeline.
+// Store is state.Storer (interface) — not *state.Store (concrete type).
 type PipelineConfig struct {
 	Detector *Detector
 	Renamer  *Renamer
 	Router   *Router
 	Logger   *DropLogger
 	Bus      *eventbus.Bus
-	Store    *state.Store
+	Store    state.Storer
 }
 
 // NewPipeline creates a Pipeline and subscribes to TopicFileDropped.

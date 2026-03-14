@@ -3,6 +3,10 @@
 // Package watcher monitors the nexus-drop folder for new files
 // and publishes TopicFileDropped events to the bus for the intelligence
 // pipeline to process. It has no detection logic — pure observation only.
+//
+// Fix: New() now accepts state.Storer (interface) instead of *state.Store
+// (concrete type). Consistent with every other component. Enables testing
+// with mock stores without needing a real SQLite database.
 package watcher
 
 import (
@@ -38,7 +42,8 @@ type Watcher struct {
 }
 
 // New creates a Watcher for the given directory.
-func New(watchDir string, bus *eventbus.Bus, store *state.Store) *Watcher {
+// store is state.Storer (interface) — not *state.Store (concrete type).
+func New(watchDir string, bus *eventbus.Bus, store state.Storer) *Watcher {
 	return &Watcher{
 		watchDir: watchDir,
 		bus:      bus,

@@ -8,6 +8,12 @@
 //   db.go already declares: type Store struct { ... }
 //   Go does not allow a type and interface with the same name in the
 //   same package. Idiomatic convention: -er suffix → state.Storer.
+//
+// Fix: Added LogDownload to the interface.
+//   *Store.LogDownload is implemented in db.go (line ~500) but was
+//   missing from this interface. DropLogger calls store.LogDownload —
+//   once logger.go was corrected to accept state.Storer instead of
+//   *state.Store, the build would fail at compile time without this.
 package state
 
 import "time"
@@ -52,4 +58,9 @@ type Storer interface {
 	RegisterProject(p *Project) error
 	GetProject(id string) (*Project, error)
 	GetAllProjects() ([]*Project, error)
+
+	// ── Download log ─────────────────────────────────────────
+	// LogDownload records a file processed by Nexus Drop.
+	// Required by DropLogger in internal/intelligence/logger.go.
+	LogDownload(d *DownloadLog) error
 }
