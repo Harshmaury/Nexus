@@ -4,29 +4,25 @@
 // It wires every component together, starts them as goroutines,
 // and shuts down cleanly on SIGINT or SIGTERM.
 //
-// Phase 7 changes:
-//   - Removed local envOrDefault, durationEnvOrDefault, expandHome, shutdownTimeout.
-//     All four now come from internal/config — the single source of truth.
-//   - Fixed recoveryCtrl.Run(ctx.Done()) → recoveryCtrl.Run(ctx) to match the
-//     Run(ctx context.Context) error signature. The previous call passed a
-//     <-chan struct{} which would not compile (and would never error-propagate).
-//   - Added sync.WaitGroup so shutdown waits for all goroutines to exit before
-//     the deferred store.Close() fires. Prevents in-flight DB writes being cut off.
-//
-// Phase 8 addition:
-//   - HTTP/JSON API server added as component 8.
-//     Runs alongside the Unix socket server — same context, same controllers.
-//     Listen address: NEXUS_HTTP_ADDR env var (default :8080).
+// Phase 9 addition:
+//   - Process provider registered (pkg/runtime/process).
+//     Manages local OS processes — go run, python, node, scripts.
+//     PID files at ~/.nexus/pids/. Logs at ~/.nexus/logs/.
+//   - K8s provider registered (pkg/runtime/k8s).
+//     Manages Kubernetes Deployments via kubectl (~/bin/kubectl).
+//     Scale-to-0 stop strategy — deployments never deleted.
+//   Both providers fail gracefully: if unavailable at startup,
+//   a WARNING is logged and the daemon continues without them.
 //
 // Component startup order:
 //  1. State store (SQLite)
 //  2. Event bus
-//  3. Providers
+//  3. Providers (Docker, Process, K8s)
 //  4. Controllers (project, health, recovery)
 //  5. Reconciler engine
 //  6. Unix socket server
 //  7. HTTP API server
-//  8. Result logger (reads engine + health + recovery channels)
+//  8. Result logger (drains engine + health + recovery channels)
 package main
 
 import (
@@ -45,14 +41,12 @@ import (
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/Harshmaury/Nexus/pkg/runtime"
-	dockerprovider "github.com/Harshmaury/Nexus/pkg/runtime/docker"
+	dockerprovider  "github.com/Harshmaury/Nexus/pkg/runtime/docker"
+	k8sprovider     "github.com/Harshmaury/Nexus/pkg/runtime/k8s"
+	processprovider "github.com/Harshmaury/Nexus/pkg/runtime/process"
 )
 
-// ── CONSTANTS ────────────────────────────────────────────────────────────────
-
 const daemonVersion = "0.1.0"
-
-// ── ENTRY POINT ──────────────────────────────────────────────────────────────
 
 func main() {
 	logger := log.New(os.Stdout, "[engxd] ", log.LstdFlags)
@@ -65,11 +59,8 @@ func main() {
 	logger.Println("daemon stopped cleanly")
 }
 
-// ── RUN ──────────────────────────────────────────────────────────────────────
-
 func run(logger *log.Logger) error {
 	// ── 1. STATE STORE ───────────────────────────────────────────────────────
-	// config.EnvOrDefault and config.ExpandHome replace the former local helpers.
 	dbPath := config.ExpandHome(config.EnvOrDefault("NEXUS_DB_PATH", config.DefaultDBPath))
 	logger.Printf("opening state store: %s", dbPath)
 
@@ -77,7 +68,6 @@ func run(logger *log.Logger) error {
 	if err != nil {
 		return fmt.Errorf("open state store: %w", err)
 	}
-	// store.Close is deferred after wg.Wait() — see shutdown section below.
 
 	// ── 2. EVENT BUS ─────────────────────────────────────────────────────────
 	bus := eventbus.NewWithErrorHandler(func(topic eventbus.Topic, handlerID string, err error) {
@@ -87,12 +77,31 @@ func run(logger *log.Logger) error {
 	// ── 3. PROVIDERS ─────────────────────────────────────────────────────────
 	providers := runtime.Providers{}
 
+	// Docker provider
 	dockerProvider, err := dockerprovider.New()
 	if err != nil {
 		logger.Printf("WARNING: Docker provider unavailable — docker services will not start: %v", err)
 	} else {
 		providers[state.ProviderDocker] = dockerProvider
 		logger.Printf("registered Docker provider")
+	}
+
+	// Process provider — manages local OS processes (go run, python, node, scripts)
+	processProvider, err := processprovider.New()
+	if err != nil {
+		logger.Printf("WARNING: Process provider unavailable: %v", err)
+	} else {
+		providers[state.ProviderProcess] = processProvider
+		logger.Printf("registered Process provider (pids: ~/.nexus/pids, logs: ~/.nexus/logs)")
+	}
+
+	// K8s provider — manages Kubernetes Deployments via kubectl
+	k8sProvider, err := k8sprovider.New()
+	if err != nil {
+		logger.Printf("WARNING: K8s provider unavailable — kubectl not found: %v", err)
+	} else {
+		providers[state.ProviderK8s] = k8sProvider
+		logger.Printf("registered K8s provider (kubectl: %s)", k8sProvider.Name())
 	}
 
 	logger.Printf("providers ready: %d registered", len(providers))
@@ -142,15 +151,11 @@ func run(logger *log.Logger) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// ── WAITGROUP — tracks all goroutines so shutdown is clean ────────────────
-	// wg.Wait() is called before store.Close(). This guarantees in-flight DB
-	// writes from any goroutine complete before the connection is torn down.
 	var wg sync.WaitGroup
 	errCh := make(chan error, 6)
 
-	// ── 7. START ALL GOROUTINES ───────────────────────────────────────────────
+	// ── START ALL GOROUTINES ──────────────────────────────────────────────────
 
-	// Reconciler
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -160,7 +165,6 @@ func run(logger *log.Logger) error {
 		}
 	}()
 
-	// Health controller
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -170,8 +174,6 @@ func run(logger *log.Logger) error {
 		}
 	}()
 
-	// Recovery controller — Run(ctx context.Context) error, not Run(ctx.Done()).
-	// The previous call passed a <-chan struct{} which is the wrong type.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -181,7 +183,6 @@ func run(logger *log.Logger) error {
 		}
 	}()
 
-	// Unix socket server
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -191,7 +192,6 @@ func run(logger *log.Logger) error {
 		}
 	}()
 
-	// HTTP API server
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -201,16 +201,16 @@ func run(logger *log.Logger) error {
 		}
 	}()
 
-	// Result logger — drains engine, health, and recovery channels.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		logResults(ctx, logger, engine, healthCtrl, recoveryCtrl)
 	}()
 
-	logger.Printf("✓ Nexus daemon ready — socket=%s http=%s db=%s", socketPath, httpAddr, dbPath)
+	logger.Printf("✓ Nexus daemon ready — socket=%s http=%s db=%s providers=%d",
+		socketPath, httpAddr, dbPath, len(providers))
 
-	// ── WAIT FOR SHUTDOWN SIGNAL ──────────────────────────────────────────────
+	// ── WAIT FOR SHUTDOWN ─────────────────────────────────────────────────────
 	select {
 	case sig := <-sigCh:
 		logger.Printf("received signal %s — shutting down", sig)
@@ -218,13 +218,7 @@ func run(logger *log.Logger) error {
 		logger.Printf("component error — shutting down: %v", err)
 	}
 
-	cancel() // unblock all goroutines
-
-	// Wait for all goroutines to finish in-flight work before closing the store.
-	// config.ShutdownTimeout replaces the former local shutdownTimeout constant.
-	// Wait for all PublishAsync goroutines to finish before components stop.
-	// This ensures in-flight recovery handlers complete their store writes
-	// before the WaitGroup drains and store.Close() fires.
+	cancel()
 	bus.Wait()
 
 	logger.Printf("waiting up to %s for components to stop", config.ShutdownTimeout)
@@ -245,17 +239,13 @@ func run(logger *log.Logger) error {
 		logger.Println("WARNING: shutdown timeout exceeded — forcing exit")
 	}
 
-	// Deferred inside run() so store closes after wg.Wait().
 	logger.Println("closing state store")
 	_ = store.Close()
 
 	return nil
 }
 
-// ── RESULT LOGGER ────────────────────────────────────────────────────────────
-
-// logResults drains the result channels and logs significant events.
-// Keeping logging here (not in hot paths) keeps components clean.
+// logResults drains result channels and logs significant events.
 func logResults(
 	ctx context.Context,
 	logger *log.Logger,

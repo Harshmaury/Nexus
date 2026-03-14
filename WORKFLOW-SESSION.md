@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.0.0
+# @version: 2.1.0
 # @updated: 2026-03-14
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -84,39 +84,34 @@ Git:      2.43.0   → WSL2
   intelligence/logger.go    Download audit log
   intelligence/pipeline.go  Full pipeline coordinator
 
-### ✅ Phase 3 — Runtime Providers
-  pkg/runtime/docker/provider.go   Docker SDK, label-based ownership
-  pkg/runtime/process/provider.go  os/exec local processes         ← IMPLEMENT
-  pkg/runtime/k8s/provider.go      client-go, scale-to-0 stop      ← IMPLEMENT
-
-### ✅ Phase 4 — CLI
-  register, project start/stop/status, services, events, version
-  engx drop approve/reject                                           ← IMPLEMENT
-
-### ✅ Phase 5 — Tests
-  42 tests passing across: state, eventbus, daemon/engine, controllers/recovery
+### ✅ Phase 3 — Bug Fixes (2026-03-14)
+  9 pre-build bugs resolved — go.mod version, Storer interface, notifier WSL fix
 
 ### ✅ Phase 7 — Internal Hardening
   Versioned migrations, persisted back-off, async crash events,
   WaitGroup shutdown, non-blocking router, policy dedup
 
-### ✅ Phase 8 — REST API (phase8-api branch)
-  api/server.go             HTTP server + graceful shutdown
+### ✅ Phase 8 — REST API
+  api/server.go             HTTP server + graceful shutdown (config.ShutdownTimeout)
   api/handler/projects.go   GET/POST projects
   api/handler/services.go   GET services
   api/handler/events.go     GET events
   api/middleware/           Logging + panic recovery
-  Binds: 127.0.0.1 — API key auth pending (Phase 8 remainder)
+  Binds: 127.0.0.1 — API key auth pending
+
+### ✅ Phase 9 — Runtime Providers (2026-03-14)
+  pkg/runtime/process/provider.go  os/exec, PID files, SIGTERM→SIGKILL
+  pkg/runtime/k8s/provider.go      kubectl binary, scale-to-0 stop
+  cmd/engxd/main.go                Process + K8s providers wired at startup
 
 ---
 
 ## ROADMAP
 
-Phase 9  — Process + K8s providers (unblocks non-Docker workloads)
-Phase 10 — Drop approve/reject CLI commands (engx drop approve <file>)
-Phase 11 — Project dependency graph (depends_on in .nexus.yaml)
-Phase 12 — Observability (OTel spans, Prometheus, bubbletea TUI)
-Phase 13 — Drop Intelligence v2 (ML layer 5, TF-IDF classifier, engx drop train)
+Phase 10 — Drop approve/reject CLI (engx drop approve/reject — socket commands)
+Phase 11 — Project dependency graph (depends_on in .nexus.yaml, ordered startup)
+Phase 12 — Observability (OTel spans, Prometheus counters, bubbletea TUI)
+Phase 13 — Drop Intelligence v2 (ML layer 5, TF-IDF, engx drop train)
 Phase 14 — Multi-machine agent mode (gRPC, remote state sync)
 
 ---
@@ -124,6 +119,6 @@ Phase 14 — Multi-machine agent mode (gRPC, remote state sync)
 ## CHANGELOG
 
 2026-03-11  v1.0  Created — workspace at ~/dev/nexus (old)
-2026-03-13  v1.2  Phase 7+8 complete, 42 tests, file naming convention added
-2026-03-14  v2.0  Paths corrected to ~/workspace, split into 3 files,
-                  9 pre-build bugs fixed (go.mod, Storer interface, notifier)
+2026-03-13  v1.2  Phase 7+8 complete, 42 tests
+2026-03-14  v2.0  Paths corrected to ~/workspace, split into 3 files, 9 bugs fixed
+2026-03-14  v2.1  Phase 9 complete — Process + K8s providers, engxd wired
