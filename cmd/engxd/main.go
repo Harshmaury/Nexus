@@ -1,28 +1,9 @@
 // @nexus-project: nexus
 // @nexus-path: cmd/engxd/main.go
-// engxd is the Nexus daemon — the background process that manages all services.
-// It wires every component together, starts them as goroutines,
-// and shuts down cleanly on SIGINT or SIGTERM.
-//
-// Phase 9 addition:
-//   - Process provider registered (pkg/runtime/process).
-//     Manages local OS processes — go run, python, node, scripts.
-//     PID files at ~/.nexus/pids/. Logs at ~/.nexus/logs/.
-//   - K8s provider registered (pkg/runtime/k8s).
-//     Manages Kubernetes Deployments via kubectl (~/bin/kubectl).
-//     Scale-to-0 stop strategy — deployments never deleted.
-//   Both providers fail gracefully: if unavailable at startup,
-//   a WARNING is logged and the daemon continues without them.
-//
-// Component startup order:
-//  1. State store (SQLite)
-//  2. Event bus
-//  3. Providers (Docker, Process, K8s)
-//  4. Controllers (project, health, recovery)
-//  5. Reconciler engine
-//  6. Unix socket server
-//  7. HTTP API server
-//  8. Result logger (drains engine + health + recovery channels)
+// Phase 12 addition:
+//   telemetry.New() creates a Metrics instance at startup.
+//   Passed to EngineConfig.Metrics and api.ServerConfig.Metrics.
+//   GET /metrics is now live at 127.0.0.1:8080/metrics.
 package main
 
 import (
@@ -40,6 +21,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
+	"github.com/Harshmaury/Nexus/internal/telemetry"
 	"github.com/Harshmaury/Nexus/pkg/runtime"
 	dockerprovider  "github.com/Harshmaury/Nexus/pkg/runtime/docker"
 	k8sprovider     "github.com/Harshmaury/Nexus/pkg/runtime/k8s"
@@ -51,83 +33,76 @@ const daemonVersion = "0.1.0"
 func main() {
 	logger := log.New(os.Stdout, "[engxd] ", log.LstdFlags)
 	logger.Printf("Nexus daemon v%s starting", daemonVersion)
-
 	if err := run(logger); err != nil {
 		logger.Fatalf("fatal: %v", err)
 	}
-
 	logger.Println("daemon stopped cleanly")
 }
 
 func run(logger *log.Logger) error {
-	// ── 1. STATE STORE ───────────────────────────────────────────────────────
+	// ── 1. METRICS ───────────────────────────────────────────────────────────
+	metrics := telemetry.New()
+
+	// ── 2. STATE STORE ───────────────────────────────────────────────────────
 	dbPath := config.ExpandHome(config.EnvOrDefault("NEXUS_DB_PATH", config.DefaultDBPath))
 	logger.Printf("opening state store: %s", dbPath)
-
 	store, err := state.New(dbPath)
 	if err != nil {
 		return fmt.Errorf("open state store: %w", err)
 	}
 
-	// ── 2. EVENT BUS ─────────────────────────────────────────────────────────
+	// ── 3. EVENT BUS ─────────────────────────────────────────────────────────
 	bus := eventbus.NewWithErrorHandler(func(topic eventbus.Topic, handlerID string, err error) {
 		logger.Printf("event bus error: topic=%s handler=%s err=%v", topic, handlerID, err)
 	})
 
-	// ── 3. PROVIDERS ─────────────────────────────────────────────────────────
+	// ── 4. PROVIDERS ─────────────────────────────────────────────────────────
 	providers := runtime.Providers{}
 
-	// Docker provider
-	dockerProvider, err := dockerprovider.New()
-	if err != nil {
-		logger.Printf("WARNING: Docker provider unavailable — docker services will not start: %v", err)
+	if dp, err := dockerprovider.New(); err != nil {
+		logger.Printf("WARNING: Docker provider unavailable: %v", err)
 	} else {
-		providers[state.ProviderDocker] = dockerProvider
+		providers[state.ProviderDocker] = dp
 		logger.Printf("registered Docker provider")
 	}
 
-	// Process provider — manages local OS processes (go run, python, node, scripts)
-	processProvider, err := processprovider.New()
-	if err != nil {
+	if pp, err := processprovider.New(); err != nil {
 		logger.Printf("WARNING: Process provider unavailable: %v", err)
 	} else {
-		providers[state.ProviderProcess] = processProvider
-		logger.Printf("registered Process provider (pids: ~/.nexus/pids, logs: ~/.nexus/logs)")
+		providers[state.ProviderProcess] = pp
+		logger.Printf("registered Process provider")
 	}
 
-	// K8s provider — manages Kubernetes Deployments via kubectl
-	k8sProvider, err := k8sprovider.New()
-	if err != nil {
-		logger.Printf("WARNING: K8s provider unavailable — kubectl not found: %v", err)
+	if kp, err := k8sprovider.New(); err != nil {
+		logger.Printf("WARNING: K8s provider unavailable: %v", err)
 	} else {
-		providers[state.ProviderK8s] = k8sProvider
-		logger.Printf("registered K8s provider (kubectl: %s)", k8sProvider.Name())
+		providers[state.ProviderK8s] = kp
+		logger.Printf("registered K8s provider")
 	}
 
 	logger.Printf("providers ready: %d registered", len(providers))
 
-	// ── 4. CONTROLLERS ───────────────────────────────────────────────────────
-	projectCtrl := controllers.NewProjectController(store, bus)
-
-	healthCtrl := controllers.NewHealthController(controllers.HealthControllerConfig{
+	// ── 5. CONTROLLERS ───────────────────────────────────────────────────────
+	projectCtrl   := controllers.NewProjectController(store, bus)
+	healthCtrl    := controllers.NewHealthController(controllers.HealthControllerConfig{
 		Store:     store,
 		Bus:       bus,
 		Providers: providers,
 		Interval:  config.DurationEnvOrDefault("NEXUS_HEALTH_INTERVAL", config.DefaultHealthInterval),
 		Timeout:   config.DurationEnvOrDefault("NEXUS_HEALTH_TIMEOUT", config.DefaultHealthTimeout),
 	})
+	recoveryCtrl  := controllers.NewRecoveryController(store, bus)
 
-	recoveryCtrl := controllers.NewRecoveryController(store, bus)
-
-	// ── 5. RECONCILER ────────────────────────────────────────────────────────
+	// ── 6. RECONCILER ────────────────────────────────────────────────────────
 	engine := daemon.NewEngine(daemon.EngineConfig{
 		Store:     store,
 		Bus:       bus,
 		Providers: providers,
+		Metrics:   metrics,
 		Interval:  config.DurationEnvOrDefault("NEXUS_RECONCILE_INTERVAL", config.DefaultReconcileInterval),
 	})
 
-	// ── 6. UNIX SOCKET SERVER ─────────────────────────────────────────────────
+	// ── 7. UNIX SOCKET SERVER ─────────────────────────────────────────────────
 	socketPath := config.EnvOrDefault("NEXUS_SOCKET", daemon.DefaultSocketPath)
 	server := daemon.NewServer(daemon.ServerConfig{
 		SocketPath:  socketPath,
@@ -136,25 +111,23 @@ func run(logger *log.Logger) error {
 		ProjectCtrl: projectCtrl,
 	})
 
-	// ── 7. HTTP API SERVER ───────────────────────────────────────────────────
+	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	httpAddr := config.EnvOrDefault("NEXUS_HTTP_ADDR", config.DefaultHTTPAddr)
 	apiServer := api.NewServer(api.ServerConfig{
 		Addr:        httpAddr,
 		Store:       store,
 		ProjectCtrl: projectCtrl,
+		Metrics:     metrics,
 		Logger:      logger,
 	})
 
-	// ── CONTEXT + SIGNAL HANDLING ─────────────────────────────────────────────
+	// ── CONTEXT + SIGNALS ─────────────────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
-
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 6)
-
-	// ── START ALL GOROUTINES ──────────────────────────────────────────────────
 
 	wg.Add(1)
 	go func() {
@@ -195,9 +168,9 @@ func run(logger *log.Logger) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		logger.Printf("HTTP API server started: %s", httpAddr)
+		logger.Printf("HTTP API started: %s", httpAddr)
 		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("http api server: %w", err)
+			errCh <- fmt.Errorf("http api: %w", err)
 		}
 	}()
 
@@ -207,27 +180,22 @@ func run(logger *log.Logger) error {
 		logResults(ctx, logger, engine, healthCtrl, recoveryCtrl)
 	}()
 
-	logger.Printf("✓ Nexus daemon ready — socket=%s http=%s db=%s providers=%d",
-		socketPath, httpAddr, dbPath, len(providers))
+	logger.Printf("✓ Nexus ready — socket=%s http=%s metrics=%s/metrics providers=%d",
+		socketPath, httpAddr, httpAddr, len(providers))
 
-	// ── WAIT FOR SHUTDOWN ─────────────────────────────────────────────────────
 	select {
 	case sig := <-sigCh:
-		logger.Printf("received signal %s — shutting down", sig)
+		logger.Printf("received %s — shutting down", sig)
 	case err := <-errCh:
-		logger.Printf("component error — shutting down: %v", err)
+		logger.Printf("component error: %v — shutting down", err)
 	}
 
 	cancel()
 	bus.Wait()
 
 	logger.Printf("waiting up to %s for components to stop", config.ShutdownTimeout)
-
 	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
+	go func() { wg.Wait(); close(done) }()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
 	defer shutdownCancel()
@@ -236,16 +204,14 @@ func run(logger *log.Logger) error {
 	case <-done:
 		logger.Println("all components stopped cleanly")
 	case <-shutdownCtx.Done():
-		logger.Println("WARNING: shutdown timeout exceeded — forcing exit")
+		logger.Println("WARNING: shutdown timeout exceeded")
 	}
 
 	logger.Println("closing state store")
 	_ = store.Close()
-
 	return nil
 }
 
-// logResults drains result channels and logs significant events.
 func logResults(
 	ctx context.Context,
 	logger *log.Logger,
@@ -257,37 +223,31 @@ func logResults(
 		select {
 		case <-ctx.Done():
 			return
-
 		case result, ok := <-engine.Results():
 			if !ok {
 				return
 			}
 			if len(result.Started) > 0 || len(result.Stopped) > 0 ||
-				len(result.Maintained) > 0 || result.HasErrors() {
+				len(result.Maintained) > 0 || len(result.Deferred) > 0 || result.HasErrors() {
 				logger.Printf("reconcile: %s", result.Summary())
 			}
 			for _, e := range result.Errors {
 				logger.Printf("reconcile error: %s", e.Error())
 			}
-
 		case result, ok := <-healthCtrl.Results():
 			if !ok {
 				return
 			}
 			if !result.IsHealthy() {
 				logger.Printf("health: service=%s status=%s message=%s duration=%s",
-					result.ServiceID, result.Status, result.Message,
-					result.Duration.Round(0),
-				)
+					result.ServiceID, result.Status, result.Message, result.Duration.Round(0))
 			}
-
 		case decision, ok := <-recoveryCtrl.Decisions():
 			if !ok {
 				return
 			}
 			logger.Printf("recovery: service=%s action=%s reason=%s",
-				decision.ServiceID, decision.Action, decision.Reason,
-			)
+				decision.ServiceID, decision.Action, decision.Reason)
 		}
 	}
 }

@@ -1,15 +1,9 @@
 // @nexus-project: nexus
 // @nexus-path: cmd/engx/main.go
-// engx is the Nexus CLI — the developer-facing interface to the daemon.
-//
-// Phase 10 additions:
-//   - engx drop pending          → list all files awaiting approval
-//   - engx drop approve <file>   → move file to resolved destination
-//   - engx drop reject  <file>   → tag file UNROUTED__ and leave in place
-//
-//   The <file> argument accepts either the full absolute path or just the
-//   filename — the CLI resolves basename matches from the pending list so
-//   the user never has to type the full path.
+// Phase 12 addition:
+//   engx watch — live dashboard that polls the daemon every 2s and
+//   redraws the terminal in place. Zero new dependencies — uses ANSI
+//   escape codes directly. Press Ctrl-C to exit.
 package main
 
 import (
@@ -18,8 +12,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Harshmaury/Nexus/internal/controllers"
@@ -57,10 +53,125 @@ func rootCmd() *cobra.Command {
 		servicesCmd(&socketPath),
 		eventsCmd(&socketPath),
 		dropCmd(&socketPath),
+		watchCmd(&socketPath),
 		versionCmd(),
 	)
 
 	return root
+}
+
+// ── WATCH COMMAND ─────────────────────────────────────────────────────────────
+
+func watchCmd(socketPath *string) *cobra.Command {
+	var interval time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "watch",
+		Short: "Live dashboard — refreshes every 2s (Ctrl-C to exit)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+			// Hide cursor for clean redraws.
+			fmt.Print("\033[?25l")
+			defer fmt.Print("\033[?25h\033[0m\n") // restore on exit
+
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+
+			// Draw immediately, then on every tick.
+			drawWatch(*socketPath)
+
+			for {
+				select {
+				case <-sigCh:
+					return nil
+				case <-ticker.C:
+					drawWatch(*socketPath)
+				}
+			}
+		},
+	}
+
+	cmd.Flags().DurationVarP(&interval, "interval", "i", 2*time.Second, "refresh interval")
+	return cmd
+}
+
+// drawWatch clears the screen and redraws the full dashboard.
+func drawWatch(socketPath string) {
+	// Move cursor to top-left without clearing — avoids flicker.
+	fmt.Print("\033[H\033[2J")
+
+	now := time.Now().Format("15:04:05")
+
+	// ── Header ──────────────────────────────────────────────────────────────
+	fmt.Printf("\033[1m\033[36m NEXUS WATCH\033[0m  %s  (Ctrl-C to exit)\n", now)
+	fmt.Println(strings.Repeat("─", 80))
+
+	// ── Projects + Services ──────────────────────────────────────────────────
+	resp, err := sendCommand(socketPath, daemon.CmdProjectStatus,
+		daemon.ProjectStatusParams{ProjectID: ""})
+	if err != nil {
+		fmt.Printf("\n  \033[31m✗ daemon unreachable:\033[0m %v\n", err)
+		return
+	}
+
+	var statuses []*controllers.ProjectStatus
+	if err := json.Unmarshal(resp.Data, &statuses); err != nil {
+		fmt.Printf("  decode error: %v\n", err)
+		return
+	}
+
+	if len(statuses) == 0 {
+		fmt.Println("\n  No projects registered.  Run: engx register <path>")
+		return
+	}
+
+	totalSvcs, healthySvcs := 0, 0
+
+	for _, proj := range statuses {
+		fmt.Printf("\n \033[1m%s\033[0m  (%s)\n", proj.ProjectID, proj.ProjectName)
+		fmt.Printf("  %-28s %-10s %-12s %-10s\n", "SERVICE", "DESIRED", "ACTUAL", "HEALTH")
+		fmt.Println("  " + strings.Repeat("─", 66))
+
+		for _, svc := range proj.Services {
+			indicator := "\033[32m●\033[0m"
+			if !svc.IsHealthy {
+				switch svc.ActualState {
+				case state.StateCrashed:
+					indicator = "\033[31m✗\033[0m"
+				case state.StateMaintenance:
+					indicator = "\033[33m⚠\033[0m"
+				case state.StateRecovering:
+					indicator = "\033[33m↻\033[0m"
+				default:
+					indicator = "\033[90m○\033[0m"
+				}
+			}
+			fails := ""
+			if svc.FailCount > 0 {
+				fails = fmt.Sprintf(" \033[31m(%dx)\033[0m", svc.FailCount)
+			}
+			fmt.Printf("  %-28s %-10s %-12s %s%s\n",
+				svc.Name,
+				string(svc.DesiredState),
+				string(svc.ActualState),
+				indicator, fails,
+			)
+			totalSvcs++
+			if svc.IsHealthy {
+				healthySvcs++
+			}
+		}
+	}
+
+	// ── Summary bar ──────────────────────────────────────────────────────────
+	fmt.Println("\n" + strings.Repeat("─", 80))
+	healthColour := "\033[32m"
+	if healthySvcs < totalSvcs {
+		healthColour = "\033[31m"
+	}
+	fmt.Printf(" Services: %s%d/%d healthy\033[0m\n", healthColour, healthySvcs, totalSvcs)
 }
 
 // ── SOCKET CLIENT ─────────────────────────────────────────────────────────────
@@ -68,10 +179,7 @@ func rootCmd() *cobra.Command {
 func sendCommand(socketPath string, cmd daemon.Command, params any) (*daemon.Response, error) {
 	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"cannot connect to Nexus daemon at %s\n  Is engxd running? Start it with: engxd",
-			socketPath,
-		)
+		return nil, fmt.Errorf("daemon not running — start with: engxd")
 	}
 	defer conn.Close()
 
@@ -101,223 +209,159 @@ func sendCommand(socketPath string, cmd daemon.Command, params any) (*daemon.Res
 	if !resp.OK {
 		return nil, fmt.Errorf("%s", resp.Error)
 	}
-
 	return &resp, nil
 }
 
-// ── DROP COMMAND ──────────────────────────────────────────────────────────────
+// ── DROP COMMANDS ─────────────────────────────────────────────────────────────
 
 func dropCmd(socketPath *string) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "drop",
-		Short: "Manage files pending approval in the drop folder",
-		Example: `  engx drop pending
-  engx drop approve my-file.go
-  engx drop reject  my-file.go`,
-	}
-
-	cmd.AddCommand(
-		dropPendingCmd(socketPath),
-		dropApproveCmd(socketPath),
-		dropRejectCmd(socketPath),
-	)
-
+	cmd := &cobra.Command{Use: "drop", Short: "Manage files pending approval"}
+	cmd.AddCommand(dropPendingCmd(socketPath), dropApproveCmd(socketPath), dropRejectCmd(socketPath))
 	return cmd
 }
 
-// dropPendingCmd lists all files currently awaiting approval.
 func dropPendingCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "pending",
-		Short: "List files waiting for approve or reject",
+		Use: "pending", Short: "List files awaiting approval",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := sendCommand(*socketPath, daemon.CmdDropPending, nil)
 			if err != nil {
 				return err
 			}
-
 			var entries []daemon.PendingApproval
 			if err := json.Unmarshal(resp.Data, &entries); err != nil {
-				return fmt.Errorf("decode response: %w", err)
+				return fmt.Errorf("decode: %w", err)
 			}
-
 			if len(entries) == 0 {
 				fmt.Println("No files pending approval.")
 				return nil
 			}
-
 			fmt.Printf("\n%-40s %-20s %-8s  %s\n", "FILE", "PROJECT", "CONF", "DESTINATION")
 			fmt.Println(strings.Repeat("─", 100))
-
 			for _, e := range entries {
 				fmt.Printf("%-40s %-20s %5.0f%%   %s\n",
-					e.FileName,
-					e.ProjectID,
-					e.Confidence*100,
-					e.Destination,
-				)
+					e.FileName, e.ProjectID, e.Confidence*100, e.Destination)
 			}
-
-			fmt.Printf("\n%d file(s) pending — use: engx drop approve <file> | engx drop reject <file>\n\n",
-				len(entries))
+			fmt.Printf("\n%d file(s) pending\n\n", len(entries))
 			return nil
 		},
 	}
 }
 
-// dropApproveCmd approves a pending file — moves it to its resolved destination.
 func dropApproveCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:     "approve <file>",
-		Short:   "Approve a pending file — move it to its resolved destination",
-		Args:    cobra.ExactArgs(1),
-		Example: `  engx drop approve my-file.go`,
+		Use: "approve <file>", Short: "Approve — move to destination",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			filePath, err := resolvePendingFile(*socketPath, args[0])
 			if err != nil {
 				return err
 			}
-
 			resp, err := sendCommand(*socketPath, daemon.CmdDropApprove,
 				daemon.DropApproveParams{FilePath: filePath})
 			if err != nil {
 				return err
 			}
-
 			var result map[string]string
 			_ = json.Unmarshal(resp.Data, &result)
-
-			fmt.Printf("\n\033[32m✓\033[0m Approved: %s\n", result["file"])
-			fmt.Printf("  Project:     %s\n", result["project"])
-			fmt.Printf("  Destination: %s\n\n", result["destination"])
+			fmt.Printf("\n\033[32m✓\033[0m Approved: %s → %s\n\n", result["file"], result["destination"])
 			return nil
 		},
 	}
 }
 
-// dropRejectCmd rejects a pending file — tags it UNROUTED__ and leaves it in place.
 func dropRejectCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:     "reject <file>",
-		Short:   "Reject a pending file — tag it UNROUTED__ and leave in drop folder",
-		Args:    cobra.ExactArgs(1),
-		Example: `  engx drop reject my-file.go`,
+		Use: "reject <file>", Short: "Reject — tag UNROUTED__ in place",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			filePath, err := resolvePendingFile(*socketPath, args[0])
 			if err != nil {
 				return err
 			}
-
 			resp, err := sendCommand(*socketPath, daemon.CmdDropReject,
 				daemon.DropRejectParams{FilePath: filePath})
 			if err != nil {
 				return err
 			}
-
 			var result map[string]string
 			_ = json.Unmarshal(resp.Data, &result)
-
-			fmt.Printf("\n\033[31m✗\033[0m Rejected: %s\n", result["file"])
-			fmt.Printf("  Tagged as:  %s\n\n", result["tagged"])
+			fmt.Printf("\n\033[31m✗\033[0m Rejected: %s → %s\n\n", result["file"], result["tagged"])
 			return nil
 		},
 	}
 }
 
-// resolvePendingFile resolves a filename or path argument to the full absolute
-// path stored in the daemon's pending map.
-// Accepts: exact absolute path, or basename (matched against pending list).
 func resolvePendingFile(socketPath, arg string) (string, error) {
-	// If arg is an absolute path, use directly.
 	if filepath.IsAbs(arg) {
 		return arg, nil
 	}
-
-	// Otherwise fetch the pending list and match by basename.
 	resp, err := sendCommand(socketPath, daemon.CmdDropPending, nil)
 	if err != nil {
-		return "", fmt.Errorf("fetch pending list: %w", err)
+		return "", fmt.Errorf("fetch pending: %w", err)
 	}
-
 	var entries []daemon.PendingApproval
 	if err := json.Unmarshal(resp.Data, &entries); err != nil {
-		return "", fmt.Errorf("decode pending list: %w", err)
+		return "", fmt.Errorf("decode: %w", err)
 	}
-
 	var matches []daemon.PendingApproval
 	for _, e := range entries {
-		if e.FileName == arg || strings.EqualFold(e.FileName, arg) {
+		if strings.EqualFold(e.FileName, arg) {
 			matches = append(matches, e)
 		}
 	}
-
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("no pending file named %q — run 'engx drop pending' to list", arg)
+		return "", fmt.Errorf("no pending file %q — run: engx drop pending", arg)
 	case 1:
 		return matches[0].FilePath, nil
 	default:
-		// Multiple matches — print them and ask for full path.
-		fmt.Fprintf(os.Stderr, "multiple pending files named %q:\n", arg)
+		fmt.Fprintf(os.Stderr, "multiple matches for %q — use full path:\n", arg)
 		for _, m := range matches {
 			fmt.Fprintf(os.Stderr, "  %s\n", m.FilePath)
 		}
-		return "", fmt.Errorf("use the full path to disambiguate")
+		return "", fmt.Errorf("ambiguous filename")
 	}
 }
 
-// ── REGISTER COMMAND ──────────────────────────────────────────────────────────
+// ── REGISTER ──────────────────────────────────────────────────────────────────
 
 func registerCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:     "register <project-path>",
-		Short:   "Register a project with Nexus",
-		Args:    cobra.ExactArgs(1),
-		Example: `  engx register ~/workspace/projects/apps/nexus`,
+		Use: "register <path>", Short: "Register a project",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectPath, err := filepath.Abs(args[0])
 			if err != nil {
 				return fmt.Errorf("resolve path: %w", err)
 			}
-
 			manifest, err := readNexusManifest(projectPath)
 			if err != nil {
 				return err
 			}
-
 			resp, err := sendCommand(*socketPath, daemon.CmdRegisterProject, daemon.RegisterProjectParams{
-				ID:          manifest.id,
-				Name:        manifest.name,
-				Path:        projectPath,
-				Language:    manifest.language,
-				ProjectType: manifest.projectType,
-				ConfigJSON:  manifest.rawYAML,
+				ID: manifest.id, Name: manifest.name, Path: projectPath,
+				Language: manifest.language, ProjectType: manifest.projectType,
+				ConfigJSON: manifest.rawYAML,
 			})
 			if err != nil {
 				return err
 			}
-
 			var result map[string]string
 			_ = json.Unmarshal(resp.Data, &result)
-
-			fmt.Printf("✓ Registered: %s (id: %s)\n", manifest.name, manifest.id)
-			fmt.Printf("  Run: engx project status %s\n", manifest.id)
+			fmt.Printf("✓ Registered: %s (id: %s)\n  Run: engx project status %s\n",
+				manifest.name, manifest.id, manifest.id)
 			return nil
 		},
 	}
 }
 
 type nexusManifest struct {
-	id          string
-	name        string
-	language    string
-	projectType string
-	rawYAML     string
+	id, name, language, projectType, rawYAML string
 }
 
 func readNexusManifest(projectPath string) (*nexusManifest, error) {
-	manifestPath := filepath.Join(projectPath, ".nexus.yaml")
-	file, err := os.Open(manifestPath)
+	file, err := os.Open(filepath.Join(projectPath, ".nexus.yaml"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf(".nexus.yaml not found in %s", projectPath)
@@ -326,75 +370,67 @@ func readNexusManifest(projectPath string) (*nexusManifest, error) {
 	}
 	defer file.Close()
 
-	manifest := &nexusManifest{}
-	var rawLines []string
-
+	m := &nexusManifest{}
+	var lines []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		rawLines = append(rawLines, line)
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+		lines = append(lines, line)
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "#") || t == "" {
 			continue
 		}
-		parts := strings.SplitN(trimmed, ":", 2)
+		parts := strings.SplitN(t, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		switch key {
+		k, v := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		switch k {
 		case "name":
-			manifest.name = value
-			manifest.id = strings.ToLower(strings.ReplaceAll(value, " ", "-"))
+			m.name = v
+			m.id = strings.ToLower(strings.ReplaceAll(v, " ", "-"))
 		case "id":
-			manifest.id = value
+			m.id = v
 		case "language":
-			manifest.language = value
+			m.language = v
 		case "type":
-			manifest.projectType = value
+			m.projectType = v
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read .nexus.yaml: %w", err)
 	}
-	if manifest.name == "" {
+	if m.name == "" {
 		return nil, fmt.Errorf(".nexus.yaml missing required field: name")
 	}
-	manifest.rawYAML = strings.Join(rawLines, "\n")
-	return manifest, nil
+	m.rawYAML = strings.Join(lines, "\n")
+	return m, nil
 }
 
 // ── PROJECT COMMANDS ──────────────────────────────────────────────────────────
 
 func projectCmd(socketPath *string) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "project",
-		Short: "Manage projects",
-	}
+	cmd := &cobra.Command{Use: "project", Short: "Manage projects"}
 	cmd.AddCommand(projectStartCmd(socketPath), projectStopCmd(socketPath), projectStatusCmd(socketPath))
 	return cmd
 }
 
 func projectStartCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:  "start <project-id>",
-		Args: cobra.ExactArgs(1),
+		Use: "start <id>", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := sendCommand(*socketPath, daemon.CmdProjectStart,
 				daemon.ProjectStartParams{ProjectID: args[0]})
 			if err != nil {
 				return err
 			}
-			var result map[string]any
-			_ = json.Unmarshal(resp.Data, &result)
-			queued, _ := result["queued"].(float64)
-			if int(queued) == 0 {
+			var r map[string]any
+			_ = json.Unmarshal(resp.Data, &r)
+			if q, _ := r["queued"].(float64); int(q) == 0 {
 				fmt.Printf("✓ All services in %q already running\n", args[0])
-				return nil
+			} else {
+				fmt.Printf("✓ Queued %d service(s)\n  Run: engx project status %s\n", int(q), args[0])
 			}
-			fmt.Printf("✓ Queued %d service(s) to start\n  Run: engx project status %s\n",
-				int(queued), args[0])
 			return nil
 		},
 	}
@@ -402,22 +438,20 @@ func projectStartCmd(socketPath *string) *cobra.Command {
 
 func projectStopCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:  "stop <project-id>",
-		Args: cobra.ExactArgs(1),
+		Use: "stop <id>", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := sendCommand(*socketPath, daemon.CmdProjectStop,
 				daemon.ProjectStopParams{ProjectID: args[0]})
 			if err != nil {
 				return err
 			}
-			var result map[string]any
-			_ = json.Unmarshal(resp.Data, &result)
-			queued, _ := result["queued"].(float64)
-			if int(queued) == 0 {
+			var r map[string]any
+			_ = json.Unmarshal(resp.Data, &r)
+			if q, _ := r["queued"].(float64); int(q) == 0 {
 				fmt.Printf("✓ All services in %q already stopped\n", args[0])
-				return nil
+			} else {
+				fmt.Printf("✓ Queued %d service(s) to stop\n", int(q))
 			}
-			fmt.Printf("✓ Queued %d service(s) to stop\n", int(queued))
 			return nil
 		},
 	}
@@ -426,8 +460,7 @@ func projectStopCmd(socketPath *string) *cobra.Command {
 func projectStatusCmd(socketPath *string) *cobra.Command {
 	var showAll bool
 	cmd := &cobra.Command{
-		Use:  "status [project-id]",
-		Args: cobra.MaximumNArgs(1),
+		Use: "status [id]", Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectID := ""
 			if len(args) > 0 {
@@ -442,24 +475,24 @@ func projectStatusCmd(socketPath *string) *cobra.Command {
 				return err
 			}
 			if showAll || projectID == "" {
-				var statuses []*controllers.ProjectStatus
-				if err := json.Unmarshal(resp.Data, &statuses); err != nil {
-					return fmt.Errorf("decode: %w", err)
+				var ss []*controllers.ProjectStatus
+				if err := json.Unmarshal(resp.Data, &ss); err != nil {
+					return err
 				}
-				if len(statuses) == 0 {
+				if len(ss) == 0 {
 					fmt.Println("No projects registered.")
 					return nil
 				}
-				for _, s := range statuses {
+				for _, s := range ss {
 					fmt.Print(renderStatus(s))
 				}
 				return nil
 			}
-			var status controllers.ProjectStatus
-			if err := json.Unmarshal(resp.Data, &status); err != nil {
-				return fmt.Errorf("decode: %w", err)
+			var s controllers.ProjectStatus
+			if err := json.Unmarshal(resp.Data, &s); err != nil {
+				return err
 			}
-			fmt.Print(renderStatus(&status))
+			fmt.Print(renderStatus(&s))
 			return nil
 		},
 	}
@@ -467,29 +500,28 @@ func projectStatusCmd(socketPath *string) *cobra.Command {
 	return cmd
 }
 
-func renderStatus(status *controllers.ProjectStatus) string {
+func renderStatus(s *controllers.ProjectStatus) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\nPROJECT: %s (%s)\n", strings.ToUpper(status.ProjectID), status.ProjectName))
-	sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %-10s %s\n", "SERVICE", "DESIRED", "ACTUAL", "PROVIDER", "HEALTH"))
-	sb.WriteString(strings.Repeat("─", 78) + "\n")
+	sb.WriteString(fmt.Sprintf("\nPROJECT: %s (%s)\n", strings.ToUpper(s.ProjectID), s.ProjectName))
+	sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %-10s\n", "SERVICE", "DESIRED", "ACTUAL", "HEALTH"))
+	sb.WriteString(strings.Repeat("─", 68) + "\n")
 	healthy := 0
-	for _, svc := range status.Services {
-		indicator := "\033[32m✓\033[0m"
+	for _, svc := range s.Services {
+		ind := "\033[32m✓\033[0m"
 		if !svc.IsHealthy {
-			indicator = "\033[31m✗\033[0m"
+			ind = "\033[31m✗\033[0m"
 		}
 		if svc.FailCount > 0 {
-			indicator += fmt.Sprintf(" (%d failures)", svc.FailCount)
+			ind += fmt.Sprintf(" (%d)", svc.FailCount)
 		}
-		sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %-10s %s\n",
-			svc.Name, string(svc.DesiredState), string(svc.ActualState), string(svc.Provider), indicator))
+		sb.WriteString(fmt.Sprintf("%-30s %-12s %-12s %s\n",
+			svc.Name, string(svc.DesiredState), string(svc.ActualState), ind))
 		if svc.IsHealthy {
 			healthy++
 		}
 	}
-	total := len(status.Services)
-	summary := fmt.Sprintf("\n%d/%d services healthy", healthy, total)
-	if healthy == total {
+	summary := fmt.Sprintf("\n%d/%d healthy", healthy, len(s.Services))
+	if healthy == len(s.Services) {
 		sb.WriteString("\033[32m" + summary + "\033[0m\n")
 	} else {
 		sb.WriteString("\033[31m" + summary + "\033[0m\n")
@@ -497,44 +529,42 @@ func renderStatus(status *controllers.ProjectStatus) string {
 	return sb.String()
 }
 
-// ── SERVICES COMMAND ──────────────────────────────────────────────────────────
+// ── SERVICES ──────────────────────────────────────────────────────────────────
 
 func servicesCmd(socketPath *string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "services",
-		Short: "List all registered services",
+		Use: "services", Short: "List all services",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := sendCommand(*socketPath, daemon.CmdServicesList, nil)
 			if err != nil {
 				return err
 			}
-			var services []*state.Service
-			if err := json.Unmarshal(resp.Data, &services); err != nil {
-				return fmt.Errorf("decode: %w", err)
+			var svcs []*state.Service
+			if err := json.Unmarshal(resp.Data, &svcs); err != nil {
+				return err
 			}
-			if len(services) == 0 {
+			if len(svcs) == 0 {
 				fmt.Println("No services registered.")
 				return nil
 			}
-			fmt.Printf("\n%-30s %-15s %-12s %-12s %-10s\n", "SERVICE", "PROJECT", "DESIRED", "ACTUAL", "PROVIDER")
-			fmt.Println(strings.Repeat("─", 82))
-			for _, svc := range services {
-				fmt.Printf("%-30s %-15s %-12s %-12s %-10s\n",
-					svc.Name, svc.Project, string(svc.DesiredState), string(svc.ActualState), string(svc.Provider))
+			fmt.Printf("\n%-30s %-15s %-12s %-12s\n", "SERVICE", "PROJECT", "DESIRED", "ACTUAL")
+			fmt.Println(strings.Repeat("─", 72))
+			for _, s := range svcs {
+				fmt.Printf("%-30s %-15s %-12s %-12s\n",
+					s.Name, s.Project, string(s.DesiredState), string(s.ActualState))
 			}
-			fmt.Printf("\nTotal: %d services\n\n", len(services))
+			fmt.Printf("\nTotal: %d\n\n", len(svcs))
 			return nil
 		},
 	}
 }
 
-// ── EVENTS COMMAND ────────────────────────────────────────────────────────────
+// ── EVENTS ────────────────────────────────────────────────────────────────────
 
 func eventsCmd(socketPath *string) *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
-		Use:   "events",
-		Short: "Show recent platform events",
+		Use: "events", Short: "Show recent events",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := sendCommand(*socketPath, daemon.CmdEventsList, daemon.EventsListParams{Limit: limit})
 			if err != nil {
@@ -542,23 +572,19 @@ func eventsCmd(socketPath *string) *cobra.Command {
 			}
 			var events []*state.Event
 			if err := json.Unmarshal(resp.Data, &events); err != nil {
-				return fmt.Errorf("decode: %w", err)
+				return err
 			}
 			if len(events) == 0 {
-				fmt.Println("No events recorded yet.")
+				fmt.Println("No events yet.")
 				return nil
 			}
-			fmt.Printf("\n%-20s %-25s %-20s %s\n", "TIME", "TYPE", "SERVICE", "TRACE")
-			fmt.Println(strings.Repeat("─", 90))
+			fmt.Printf("\n%-20s %-25s %-20s\n", "TIME", "TYPE", "SERVICE")
+			fmt.Println(strings.Repeat("─", 68))
 			for _, e := range events {
-				trace := e.TraceID
-				if len(trace) > 20 {
-					trace = trace[:20] + "…"
-				}
-				fmt.Printf("%-20s %-25s %-20s %s\n",
-					e.CreatedAt.Format("01-02 15:04:05"), string(e.Type), e.ServiceID, trace)
+				fmt.Printf("%-20s %-25s %-20s\n",
+					e.CreatedAt.Format("01-02 15:04:05"), string(e.Type), e.ServiceID)
 			}
-			fmt.Printf("\nShowing %d events\n\n", len(events))
+			fmt.Printf("\n%d events\n\n", len(events))
 			return nil
 		},
 	}
@@ -570,8 +596,7 @@ func eventsCmd(socketPath *string) *cobra.Command {
 
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Print version",
+		Use: "version", Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("engx version %s\n", cliVersion)
 		},
