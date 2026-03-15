@@ -1,5 +1,13 @@
 // @nexus-project: nexus
 // @nexus-path: internal/agent/client.go
+// NX-H-06: re-registration is now failure-driven, not timer-driven.
+//   Previously register() was called on every 30s sync tick to "handle
+//   server restart" — 2 unnecessary upserts/minute per agent.
+//   Fix: heartbeat() returns an error when the server is unreachable.
+//   Run() tracks consecutive heartbeat failures and re-registers only
+//   after heartbeatFailThreshold failures — meaning the server likely
+//   restarted and lost the agent record.
+//
 // Package agent implements the engxa remote agent.
 //
 // An Agent connects to a central engxd over HTTP, registers itself,
@@ -38,6 +46,11 @@ const (
 	defaultSyncInterval      = 30 * time.Second
 	defaultHeartbeatInterval = 10 * time.Second
 	httpTimeout              = 10 * time.Second
+
+	// heartbeatFailThreshold is the number of consecutive heartbeat failures
+	// that triggers a re-registration. At 10s intervals, 3 failures = ~30s
+	// of server unavailability — consistent with the original sync-tick cadence.
+	heartbeatFailThreshold = 3
 )
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -76,9 +89,10 @@ type ServiceActualState struct {
 
 // Agent is the remote engxa process.
 type Agent struct {
-	cfg         Config
-	client      *http.Client
-	lastDesired []ServiceDesiredState
+	cfg             Config
+	client          *http.Client
+	lastDesired     []ServiceDesiredState
+	heartbeatFails  int // consecutive heartbeat failures — NX-H-06
 }
 
 // New creates an Agent. Returns an error if required fields are missing.
@@ -129,10 +143,23 @@ func (a *Agent) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-heartbeatTick.C:
 			if err := a.heartbeat(ctx); err != nil {
-				fmt.Printf("[engxa] heartbeat: %v\n", err)
+				a.heartbeatFails++
+				fmt.Printf("[engxa] heartbeat: %v (fail %d/%d)\n",
+					err, a.heartbeatFails, heartbeatFailThreshold)
+				// Re-register once threshold is reached — server likely restarted.
+				if a.heartbeatFails >= heartbeatFailThreshold {
+					if rerr := a.register(ctx); rerr != nil {
+						fmt.Printf("[engxa] re-register failed: %v\n", rerr)
+					} else {
+						fmt.Printf("[engxa] re-registered with %s\n", a.cfg.ServerURL)
+						a.heartbeatFails = 0
+					}
+				}
+			} else {
+				a.heartbeatFails = 0 // reset on success
 			}
 		case <-syncTick.C:
-			_ = a.register(ctx) // re-register in case server restarted
+			// No automatic re-registration here — heartbeat handles it (NX-H-06).
 			a.sync(ctx)
 		}
 	}
