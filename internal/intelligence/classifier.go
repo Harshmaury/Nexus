@@ -30,6 +30,10 @@
 //   Example: "nexus__drop-router__20260314_1400.go"
 //   → ["nexus", "drop", "router", "20260314", "1400"] → after filter → ["nexus", "drop", "router"]
 //
+// NX-H-03: saveModel no longer calls os.UserHomeDir() — all paths derived
+//   from c.modelDir which is set once at construction time. Eliminates the
+//   drift risk where home dir resolves differently between New() and Train().
+//
 // NX-Fix-03: Classifier is now goroutine-safe.
 //   Previously Train() replaced c.model with a bare pointer assignment while
 //   Classify() and ModelInfo() read c.model concurrently from the intelligence
@@ -48,6 +52,7 @@ package intelligence
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -118,7 +123,8 @@ func NewClassifier() *Classifier {
 	c := &Classifier{modelDir: filepath.Join(home, filepath.Dir(modelFileName))}
 
 	// Best-effort load — failure leaves classifier inactive, not broken.
-	data, err := os.ReadFile(filepath.Join(home, modelFileName))
+	// NX-H-03: load path derived from modelDir, consistent with saveModel.
+	data, err := os.ReadFile(filepath.Join(c.modelDir, filepath.Base(modelFileName)))
 	if err != nil {
 		return c
 	}
@@ -283,19 +289,22 @@ func (c *Classifier) ModelInfo() map[string]any {
 
 // saveModel writes m to disk. Called by Train() after the pointer swap,
 // outside the lock so disk I/O never blocks Classify().
+//
+// NX-H-03: all paths derived from c.modelDir (set at construction) —
+// no second os.UserHomeDir() call that could resolve differently.
 func (c *Classifier) saveModel(m *ClassifierModel) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
+	if c.modelDir == "" {
+		return fmt.Errorf("classifier: modelDir not set — cannot save model")
 	}
 	if err := os.MkdirAll(c.modelDir, 0755); err != nil {
-		return err
+		return fmt.Errorf("classifier: create model dir: %w", err)
 	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("classifier: marshal model: %w", err)
 	}
-	return os.WriteFile(filepath.Join(home, modelFileName), data, 0644)
+	modelPath := filepath.Join(c.modelDir, filepath.Base(modelFileName))
+	return os.WriteFile(modelPath, data, 0644)
 }
 
 // ── TOKENISATION ──────────────────────────────────────────────────────────────
