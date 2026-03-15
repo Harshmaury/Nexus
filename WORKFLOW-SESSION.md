@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.9.0
+# @version: 2.8.0
 # @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -95,5 +95,5 @@ Future Nexus work is driven by ADRs when new platform requirements emerge.
 ## CHANGELOG
 
 2026-03-14  v2.0–v2.6  Phases 9–14, platform docs
-2026-03-15  v2.9  WORKFLOW-WORKSPACE.md — atlas/forge projects, all drop folders, correct phase status
+2026-03-15  v2.8  fix: engine_test.go — deterministic partial failure test
 2026-03-15  v2.7  ADR-002 impl — workspace event topics + watcher extension

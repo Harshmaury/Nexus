@@ -25,12 +25,16 @@ type fakeProvider struct {
 	mu       sync.Mutex
 	running  map[string]bool
 	failNext bool
+	failIDs  map[string]bool // fail Start for specific service IDs
 	started  []string
 	stopped  []string
 }
 
 func newFakeProvider() *fakeProvider {
-	return &fakeProvider{running: make(map[string]bool)}
+	return &fakeProvider{
+		running: make(map[string]bool),
+		failIDs: make(map[string]bool),
+	}
 }
 
 // Name returns string — matches the Provider interface exactly.
@@ -39,6 +43,9 @@ func (f *fakeProvider) Name() string { return "fake" }
 func (f *fakeProvider) Start(_ context.Context, svc *state.Service) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failIDs[svc.ID] {
+		return fmt.Errorf("fakeProvider: simulated start failure for %s", svc.ID)
+	}
 	if f.failNext {
 		f.failNext = false
 		return fmt.Errorf("fakeProvider: simulated start failure")
@@ -195,7 +202,8 @@ func TestEngine_StopsServicesWithDesiredStateStopped(t *testing.T) {
 func TestEngine_PartialFailure_ReconcileContinuesForOtherServices(t *testing.T) {
 	store := openEngineStore(t)
 	provider := newFakeProvider()
-	provider.failNext = true
+	// Fail specifically for svc-bad — avoids non-deterministic failNext ordering.
+	provider.failIDs["svc-bad"] = true
 
 	_ = store.UpsertService(&state.Service{
 		ID: "svc-bad", Name: "svc-bad", Project: "ums",
@@ -219,6 +227,9 @@ func TestEngine_PartialFailure_ReconcileContinuesForOtherServices(t *testing.T) 
 	}
 	if !startedMap["svc-good"] {
 		t.Errorf("svc-good was not started; Started = %v", result.Started)
+	}
+	if startedMap["svc-bad"] {
+		t.Errorf("svc-bad should not have started; Started = %v", result.Started)
 	}
 }
 
