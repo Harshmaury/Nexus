@@ -1,5 +1,11 @@
 // @nexus-project: nexus
 // @nexus-path: internal/daemon/engine.go
+// NX-H-05: topoSort rebuilt with O(n+e) reverse adjacency list.
+//   The original inner loop was O(n × e): for each dequeued node it
+//   scanned all services and all their deps to find reverse edges.
+//   Fix: build dependents[depID]=[...serviceIDs] during setup so that
+//   dequeue processing walks only the affected edges.
+//
 // NX-H-01: publishResult is now context-aware.
 //   The old implementation had an unconditional blocking send as its
 //   last fallback: if the channel was full AND the drain failed (consumer
@@ -349,12 +355,23 @@ func (e *Engine) getProvider(providerType state.ProviderType) (runtime.Provider,
 	return provider, nil
 }
 
-// ── TOPOLOGICAL SORT (Kahn's algorithm) ──────────────────────────────────────
+// ── TOPOLOGICAL SORT (Kahn's algorithm, O(n+e)) ──────────────────────────────
+//
+// NX-H-05: O(n²) inner loop replaced with a reverse adjacency list.
+//
+// Setup  — O(n + e):
+//   byID[id]          — service lookup
+//   inDegree[id]      — number of known dependencies per service
+//   dependents[depID] — services that depend on depID (reverse edges)
+//
+// Kahn loop — O(n + e):
+//   When a node is dequeued, only its direct dependents are visited,
+//   not all services × all deps as in the original O(n × e) version.
 
 func (e *Engine) topoSort(services []*state.Service) (sorted []*state.Service, cyclic []string) {
-	deps := make(map[string][]string, len(services))
-	inDegree := make(map[string]int, len(services))
-	byID := make(map[string]*state.Service, len(services))
+	byID       := make(map[string]*state.Service, len(services))
+	inDegree   := make(map[string]int, len(services))
+	dependents := make(map[string][]string) // depID → [serviceIDs that need it]
 
 	for _, svc := range services {
 		byID[svc.ID] = svc
@@ -367,11 +384,12 @@ func (e *Engine) topoSort(services []*state.Service) (sorted []*state.Service, c
 			e.log.Warn("cannot read deps", "service_id", svc.ID, "err", err)
 			svcDeps = nil
 		}
-		deps[svc.ID] = svcDeps
 		for _, depID := range svcDeps {
-			if _, known := byID[depID]; known {
-				inDegree[svc.ID]++
+			if _, known := byID[depID]; !known {
+				continue // ignore deps on unknown services
 			}
+			inDegree[svc.ID]++
+			dependents[depID] = append(dependents[depID], svc.ID)
 		}
 	}
 
@@ -389,14 +407,11 @@ func (e *Engine) topoSort(services []*state.Service) (sorted []*state.Service, c
 		if svc, ok := byID[id]; ok {
 			sorted = append(sorted, svc)
 		}
-		for _, svc := range services {
-			for _, depID := range deps[svc.ID] {
-				if depID == id {
-					inDegree[svc.ID]--
-					if inDegree[svc.ID] == 0 {
-						queue = append(queue, svc.ID)
-					}
-				}
+		// Walk only direct dependents — O(e) total across all iterations.
+		for _, depSvcID := range dependents[id] {
+			inDegree[depSvcID]--
+			if inDegree[depSvcID] == 0 {
+				queue = append(queue, depSvcID)
 			}
 		}
 	}

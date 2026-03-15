@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.17.0
+# @version: 2.18.0
 # @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -63,6 +63,9 @@ Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
 ✅ NX-H-01  publishResult context-aware (2026-03-16)
 ✅ NX-H-02  validateToken uses GetAgentToken — minimal query (2026-03-16)
 ✅ NX-H-03  classifier save/load paths unified via modelDir (2026-03-16)
+  NX-H-04  already resolved by NX-Fix-01 (separator-aware modeForPath)
+✅ NX-H-05  topoSort O(n+e) reverse adjacency list (2026-03-16)
+  internal/daemon/engine.go  dependents[] map, O(e) dequeue walk
   internal/intelligence/classifier.go  saveModel + load use c.modelDir
   internal/state/storer.go            GetAgentToken added to interface
   internal/state/db_agents.go         GetAgentToken impl (SELECT token only)
@@ -142,3 +145,5 @@ Future Nexus work is driven by ADRs when new platform requirements emerge.
 2026-03-16  v2.15 fix: NX-H-01  — publishResult context-aware, no indefinite block
 2026-03-16  v2.16 fix: NX-H-02  — validateToken uses GetAgentToken (SELECT token only)
 2026-03-16  v2.17 fix: NX-H-03  — classifier paths unified via modelDir
+2026-03-16  v2.18 fix: NX-H-05  — topoSort O(n+e) reverse adjacency list
+                      (NX-H-04 already resolved by NX-Fix-01 separator check)
