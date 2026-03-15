@@ -4,28 +4,11 @@
 // routes files to their destination, prompts the user, or tags and leaves them.
 // It owns all routing policy — detector only scores, router decides.
 //
-// Fix changes:
-//
-//   1. NewRouter now takes state.Storer (interface) instead of *state.Store
-//      (concrete type). Consistent with every other component in the codebase.
-//      Enables testing with mock stores.
-//
-//   2. Removed notifyWindowsToast which called powershell.exe from the daemon.
-//      The daemon runs in WSL Ubuntu — powershell.exe is not on the standard
-//      PATH and the call failed silently on every invocation (error discarded
-//      via _ = cmd.Run()). This also violated Constraint #9 (environment-agnostic).
-//
-//      Replaced with a Notifier interface (see notifier.go). Router receives
-//      a Notifier at construction time. NewRouter uses NewDefaultNotifier()
-//      which returns the correct implementation for the current environment:
-//      notify-send on Linux, terminal fallback if no display is available.
-//
-//      The Windows toast code is not lost — it can be added as a
-//      WindowsNotifier implementation when Nexus gains native Windows support.
-//
-//   3. Phase 7.6 promptRoute change retained:
-//      promptRoute() publishes TopicDropPendingApproval to the event bus
-//      instead of blocking on stdin. The CLI handles the interactive prompt.
+// NX-Fix-02: local moveFile / copyFile removed.
+//   Both functions are now delegated to pkg/osutil.MoveFile — the single
+//   authoritative implementation shared with internal/daemon/server.go.
+//   Previously each package had its own copy; a bug fix in one silently
+//   left the other broken.
 package intelligence
 
 import (
@@ -37,6 +20,7 @@ import (
 
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
+	"github.com/Harshmaury/Nexus/pkg/osutil"
 )
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -121,10 +105,8 @@ func (r *Router) Route(ctx context.Context, detection DetectionResult) (RouteRes
 	switch {
 	case detection.Confidence >= autoRouteThreshold:
 		return r.autoRoute(ctx, detection, result)
-
 	case detection.Confidence >= promptThreshold:
 		return r.promptRoute(ctx, detection, result)
-
 	default:
 		return r.tagAndLeave(detection, result)
 	}
@@ -138,7 +120,7 @@ func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, resul
 		return result, fmt.Errorf("resolve destination: %w", err)
 	}
 
-	if err := moveFile(detection.FilePath, destination); err != nil {
+	if err := osutil.MoveFile(detection.FilePath, destination); err != nil {
 		return result, fmt.Errorf("move file: %w", err)
 	}
 
@@ -147,8 +129,6 @@ func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, resul
 
 	r.notifyTerminal(detection, destination)
 
-	// Non-blocking notification — uses Notifier interface (not powershell.exe).
-	// NewDefaultNotifier returns the correct implementation for the environment.
 	go r.notifier.Notify(
 		"Nexus Drop — "+detection.ProjectID,
 		fmt.Sprintf("%s → %s (%.0f%%)",
@@ -183,18 +163,14 @@ func (r *Router) autoRoute(ctx context.Context, detection DetectionResult, resul
 // ── PROMPT ROUTE ─────────────────────────────────────────────────────────────
 
 // promptRoute handles the 0.40–0.79 confidence range.
-//
-// Publishes TopicDropPendingApproval to the event bus. The CLI engx watches
-// the socket for this event and presents the interactive approval prompt to the user.
-// The pipeline returns immediately with RouteActionPrompted.
+// Publishes TopicDropPendingApproval so the CLI can present an interactive
+// approval prompt. The pipeline returns immediately with RouteActionPrompted.
 func (r *Router) promptRoute(ctx context.Context, detection DetectionResult, result RouteResult) (RouteResult, error) {
 	destination, err := r.resolveDestination(detection)
 	if err != nil {
-		// Cannot resolve destination — fall back to tag-and-leave.
 		return r.tagAndLeave(detection, result)
 	}
 
-	// Publish the pending approval event. The CLI handles the interactive prompt.
 	r.bus.Publish(eventbus.TopicDropPendingApproval, "drop", eventbus.DropApprovalPayload{
 		FilePath:    detection.FilePath,
 		ProjectID:   detection.ProjectID,
@@ -203,7 +179,7 @@ func (r *Router) promptRoute(ctx context.Context, detection DetectionResult, res
 		Method:      detection.Method,
 	})
 
-	result.FinalPath = destination // where it *will* go, pending approval
+	result.FinalPath = destination
 	result.Action = RouteActionPrompted
 	return result, nil
 }
@@ -211,8 +187,8 @@ func (r *Router) promptRoute(ctx context.Context, detection DetectionResult, res
 // ── TAG AND LEAVE ────────────────────────────────────────────────────────────
 
 func (r *Router) tagAndLeave(detection DetectionResult, result RouteResult) (RouteResult, error) {
-	dir := filepath.Dir(detection.FilePath)
-	base := filepath.Base(detection.FilePath)
+	dir        := filepath.Dir(detection.FilePath)
+	base       := filepath.Base(detection.FilePath)
 	taggedName := quarantineTag + base
 	taggedPath := filepath.Join(dir, taggedName)
 
@@ -256,47 +232,4 @@ func (r *Router) notifyTerminal(detection DetectionResult, destination string) {
 	fmt.Printf("  Project:     %s\n", detection.ProjectID)
 	fmt.Printf("  Destination: %s\n", destination)
 	fmt.Printf("  Confidence:  %.0f%%  (%s)\n\n", detection.Confidence*100, detection.Method)
-}
-
-func moveFile(src string, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return fmt.Errorf("create destination dir: %w", err)
-	}
-
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-
-	if err := copyFile(src, dst); err != nil {
-		return fmt.Errorf("copy file: %w", err)
-	}
-	return os.Remove(src)
-}
-
-func copyFile(src string, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open source: %w", err)
-	}
-	defer srcFile.Close()
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return fmt.Errorf("create destination: %w", err)
-	}
-	defer dstFile.Close()
-
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := srcFile.Read(buf)
-		if n > 0 {
-			if _, writeErr := dstFile.Write(buf[:n]); writeErr != nil {
-				return fmt.Errorf("write: %w", writeErr)
-			}
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	return nil
 }
