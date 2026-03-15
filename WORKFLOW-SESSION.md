@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.12.0
+# @version: 2.13.0
 # @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -50,6 +50,8 @@ Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
 ✅ NX-Fix-02     moveFile/copyFile extracted to pkg/osutil (2026-03-16)
 ✅ NX-Fix-03     Classifier goroutine-safe via sync.RWMutex (2026-03-16)
 ✅ NX-Fix-04     Classifier wired into engxd daemon (2026-03-16)
+✅ NX-Fix-05     Token comparison timing-safe (2026-03-16)
+  internal/api/handler/agents.go  subtle.ConstantTimeCompare replaces != 
   cmd/engxd/main.go  intelligence.NewClassifier() at step 7
                      Classifier field set in daemon.ServerConfig
                      engx drop train now functional
@@ -118,3 +120,4 @@ Future Nexus work is driven by ADRs when new platform requirements emerge.
 2026-03-16  v2.10 fix: NX-Fix-02 — moveFile extracted to pkg/osutil, removed duplication
 2026-03-16  v2.11 fix: NX-Fix-03 — Classifier goroutine safety (sync.RWMutex)
 2026-03-16  v2.12 fix: NX-Fix-04 — Classifier wired into engxd, drop train now works
+2026-03-16  v2.13 fix: NX-Fix-05 — token timing-attack via subtle.ConstantTimeCompare

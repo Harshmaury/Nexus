@@ -1,5 +1,11 @@
 // @nexus-project: nexus
 // @nexus-path: internal/api/handler/agents.go
+// NX-Fix-05: validateToken now uses subtle.ConstantTimeCompare.
+//   Plain string equality (a.Token != incoming) is vulnerable to timing
+//   attacks — an attacker on a local network can measure response latency
+//   to extract the token one byte at a time. ConstantTimeCompare always
+//   takes the same time regardless of where the strings first differ.
+//
 // AgentsHandler handles all /agents routes.
 // These are called exclusively by remote engxa agents — not by the CLI.
 //
@@ -12,6 +18,7 @@
 package handler
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -225,7 +232,9 @@ func (h *AgentsHandler) validateToken(w http.ResponseWriter, r *http.Request, ag
 		return false
 	}
 
-	if a.Token != incoming {
+	// subtle.ConstantTimeCompare prevents timing-based token extraction.
+	// Both slices are compared in constant time regardless of where they differ.
+	if subtle.ConstantTimeCompare([]byte(a.Token), []byte(incoming)) != 1 {
 		respondErr(w, http.StatusUnauthorized, fmt.Errorf("invalid token"))
 		return false
 	}
