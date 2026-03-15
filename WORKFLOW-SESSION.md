@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.10.0
+# @version: 2.11.0
 # @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -48,6 +48,10 @@ Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
 
 ✅ NX-Fix-01     Debounce map data race eliminated (2026-03-16)
 ✅ NX-Fix-02     moveFile/copyFile extracted to pkg/osutil (2026-03-16)
+✅ NX-Fix-03     Classifier goroutine-safe via sync.RWMutex (2026-03-16)
+  internal/intelligence/classifier.go  RWMutex guards model pointer
+                                        Train: build outside lock, atomic swap
+                                        Classify/ModelInfo: RLock + snapshot
   pkg/osutil/file.go                single MoveFile impl, io.CopyBuffer
   internal/intelligence/router.go   local funcs removed, uses osutil
   internal/daemon/server.go         local func removed, uses osutil
@@ -108,3 +112,4 @@ Future Nexus work is driven by ADRs when new platform requirements emerge.
 2026-03-15  v2.7  ADR-002 impl — workspace event topics + watcher extension
 2026-03-16  v2.9  fix: NX-Fix-01 — debounce map data race in watcher.go
 2026-03-16  v2.10 fix: NX-Fix-02 — moveFile extracted to pkg/osutil, removed duplication
+2026-03-16  v2.11 fix: NX-Fix-03 — Classifier goroutine safety (sync.RWMutex)
