@@ -2,8 +2,8 @@
 // @nexus-path: internal/state/db_deps.go
 // Package state — dependency persistence for Phase 11.
 //
-// Kept in a separate file so db.go remains untouched and merge-safe.
-// The migration (v3) adds a depends_on column to the services table.
+// NX-Fix-06: init() removed — v3 migration consolidated into db.go.
+// This file now contains only store methods for dependency persistence.
 // The column stores a JSON array of service IDs e.g. ["db", "cache"].
 //
 // Why a column, not a junction table?
@@ -20,20 +20,9 @@ import (
 	"time"
 )
 
-// ── MIGRATION V3 ─────────────────────────────────────────────────────────────
-// Appended to allMigrations in migrations.go — but since we cannot edit that
-// file here (it would conflict), we register the migration at init time.
-// The migrate() function in db.go reads allMigrations which is a package-level
-// var — we append to it here safely at package init before any Store is opened.
-
-func init() {
-	allMigrations = append(allMigrations,
-		schemaVersion{3, `ALTER TABLE services ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'`},
-		schemaVersion{3, `CREATE INDEX IF NOT EXISTS idx_services_depends_on ON services(depends_on)`},
-	)
-}
-
 // ── STORE METHODS ─────────────────────────────────────────────────────────────
+// NX-Fix-06: v3 migration (depends_on column) moved to db.go allMigrations.
+// init() removed — ordering is now guaranteed by slice position in db.go.
 
 // GetServiceDependencies returns the IDs of services that must be running
 // before serviceID can be started. Returns nil slice if none declared.

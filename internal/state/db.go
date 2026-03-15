@@ -12,6 +12,11 @@
 //	      Adding a column (ALTER TABLE) now works correctly on existing databases.
 //
 //	7.3 — Persist back-off state.
+//
+// NX-Fix-06: all migrations consolidated into allMigrations in this file.
+//   v3 (depends_on) and v4 (agents) were registered via init() in
+//   db_deps.go and db_agents.go. init() ordering is fragile; inline
+//   declaration here guarantees ordering by slice position.
 //	      Added restart_after DATETIME column (migration v2).
 //	      New store methods: SetRestartAfter, ClearRestartAfter, GetServicesReadyToRestart.
 //	      RecoveryController no longer uses an in-memory pending map.
@@ -552,7 +557,15 @@ type schemaVersion struct {
 }
 
 // allMigrations is the ordered, append-only migration history.
+// ALL versions live here — never in init() functions in other files.
 // Never edit an existing entry — only add new ones at the end.
+//
+// NX-Fix-06: v3 (depends_on) and v4 (agents) were previously registered
+// via init() calls in db_deps.go and db_agents.go. init() ordering is
+// determined by the Go runtime (filename order within a package) and
+// becomes fragile as more db_*.go files are added. Consolidated here so
+// the full migration history is visible in one place and ordering is
+// guaranteed by slice position, not runtime init sequencing.
 var allMigrations = []schemaVersion{
 	// ── v1: initial schema ─────────────────────────────────────────────────
 	{1, `CREATE TABLE IF NOT EXISTS services (
@@ -623,6 +636,26 @@ var allMigrations = []schemaVersion{
 	// ALTER TABLE runs exactly once — safe on both fresh and existing databases.
 	{2, `ALTER TABLE services ADD COLUMN restart_after DATETIME`},
 	{2, `CREATE INDEX IF NOT EXISTS idx_services_restart_after ON services(restart_after)`},
+
+	// ── v3: service dependency tracking ──────────────────────────────────
+	// Adds depends_on JSON column to services table.
+	// Stores ordered list of service IDs e.g. ["db", "cache"].
+	// Previously registered via init() in db_deps.go — moved here (NX-Fix-06).
+	{3, `ALTER TABLE services ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'`},
+	{3, `CREATE INDEX IF NOT EXISTS idx_services_depends_on ON services(depends_on)`},
+
+	// ── v4: remote agent registry ─────────────────────────────────────────
+	// Adds agents table for engxa remote agent tracking.
+	// Previously registered via init() in db_agents.go — moved here (NX-Fix-06).
+	{4, `CREATE TABLE IF NOT EXISTS agents (
+		id            TEXT PRIMARY KEY,
+		hostname      TEXT NOT NULL DEFAULT '',
+		address       TEXT NOT NULL DEFAULT '',
+		token         TEXT NOT NULL DEFAULT '',
+		last_seen     DATETIME,
+		registered_at DATETIME NOT NULL
+	)`},
+	{4, `CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen)`},
 }
 
 func (s *Store) migrate() error {

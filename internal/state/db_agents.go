@@ -6,6 +6,8 @@
 // It registers itself with the central engxd, receives desired state
 // for its services, and reports actual state back via heartbeats.
 //
+// NX-Fix-06: v4 migration moved to db.go allMigrations. init() removed.
+//
 // Schema (migration v4):
 //   agents table — one row per registered agent
 //   id          TEXT PK  — stable machine identifier (hostname or user-set)
@@ -30,21 +32,8 @@ import (
 
 const agentOnlineThreshold = 30 * time.Second
 
-// ── MIGRATION V4 ─────────────────────────────────────────────────────────────
-
-func init() {
-	allMigrations = append(allMigrations,
-		schemaVersion{4, `CREATE TABLE IF NOT EXISTS agents (
-			id            TEXT PRIMARY KEY,
-			hostname      TEXT NOT NULL DEFAULT '',
-			address       TEXT NOT NULL DEFAULT '',
-			token         TEXT NOT NULL DEFAULT '',
-			last_seen     DATETIME,
-			registered_at DATETIME NOT NULL
-		)`},
-		schemaVersion{4, `CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen)`},
-	)
-}
+// NX-Fix-06: v4 migration (agents table) moved to db.go allMigrations.
+// init() removed — ordering is guaranteed by slice position in db.go.
 
 // ── MODEL ─────────────────────────────────────────────────────────────────────
 
