@@ -1,6 +1,6 @@
 # WORKFLOW-SESSION.md
-# @version: 2.8.0
-# @updated: 2026-03-15
+# @version: 2.9.0
+# @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Nexus
 
 ---
@@ -38,13 +38,18 @@ Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
 ---
 
 ## BUILD STATUS
-# Last verified: 2026-03-15
+# Last verified: 2026-03-16
 
 ✅ Phases 1–14   Complete — full control plane on main
 ✅ ADR-002       Workspace observation implemented (2026-03-15)
   internal/eventbus/bus.go    5 workspace topics + 3 payloads
   internal/watcher/watcher.go WatchModeWorkspace, NewMulti(), workspace handler
   cmd/engxd/main.go           workspace watcher wired (NEXUS_WORKSPACE env var)
+
+✅ NX-Fix-01     Debounce map data race eliminated (2026-03-16)
+  internal/watcher/watcher.go debounceMap struct with sync.Mutex
+                               AfterFunc callbacks serialised via Delete()
+                               Verified clean with go build ./...
 
 ---
 
@@ -97,3 +102,4 @@ Future Nexus work is driven by ADRs when new platform requirements emerge.
 2026-03-14  v2.0–v2.6  Phases 9–14, platform docs
 2026-03-15  v2.8  fix: engine_test.go — deterministic partial failure test
 2026-03-15  v2.7  ADR-002 impl — workspace event topics + watcher extension
+2026-03-16  v2.9  fix: NX-Fix-01 — debounce map data race in watcher.go

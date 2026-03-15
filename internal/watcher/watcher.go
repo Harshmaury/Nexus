@@ -5,21 +5,17 @@
 //
 // ADR-002 implementation — Nexus owns filesystem observation:
 //
-//   The watcher now supports two modes:
+//   The watcher supports two modes:
 //
 //   1. Drop mode (existing)
 //      Watches the nexus-drop folder.
 //      Publishes TopicFileDropped for the intelligence pipeline.
 //      No change to existing behaviour.
 //
-//   2. Workspace mode (new — ADR-002)
+//   2. Workspace mode (ADR-002)
 //      Watches the workspace root and its project subdirectories.
 //      Publishes workspace event topics so Atlas and Forge can
 //      subscribe without running independent watchers.
-//
-//   Both modes run through the same watcher loop.
-//   The WatcherConfig controls which directories are watched and
-//   which event set is published for each.
 //
 //   Published workspace topics (declared in eventbus/bus.go):
 //     TopicWorkspaceFileCreated
@@ -29,6 +25,16 @@
 //     TopicWorkspaceProjectDetected
 //
 //   Consumers import topic constants from eventbus — never redefine.
+//
+// NX-Fix-01: debounce map data race eliminated.
+//   Previously, time.AfterFunc callbacks ran in separate goroutines and
+//   called delete(dropDebounce, path) concurrently with the event loop
+//   reading and writing the same map — a data race under -race.
+//
+//   Fix: debounceMap wraps each map with a sync.Mutex. The event loop
+//   calls Reset (lock → stop old timer → set new timer → unlock).
+//   The AfterFunc callback calls Delete (lock → delete key → unlock)
+//   before dispatching the handler. All map mutations are serialised.
 package watcher
 
 import (
@@ -37,6 +43,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -47,15 +54,16 @@ import (
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 
 const (
-	// Drop watcher debounce — editors write files in multiple events.
+	// debounceDelay is the quiet period for drop-folder events.
+	// Editors write files in multiple bursts; we wait for the last write.
 	debounceDelay = 300 * time.Millisecond
 
-	// Workspace watcher debounce — longer window to batch related changes
-	// (e.g. a git checkout touches many files at once).
+	// workspaceDebounceDelay is the quiet period for workspace events.
+	// A git checkout touches many files at once; batch them into one signal.
 	workspaceDebounceDelay = 1 * time.Second
 
-	// Maximum file size processed by the drop pipeline.
-	maxFileSizeBytes = 10 * 1024 * 1024 // 10MB
+	// maxDropFileSizeBytes is the largest file the drop pipeline will process.
+	maxDropFileSizeBytes = 10 * 1024 * 1024 // 10 MB
 
 	// project manifest filenames used to detect new projects.
 	nexusManifest  = ".nexus.yaml"
@@ -66,7 +74,8 @@ const (
 	dotnetManifest = ".csproj"
 )
 
-// projectManifests is the set of filenames that indicate a project root.
+// projectManifests maps manifest filenames to the detector label used in
+// TopicWorkspaceProjectDetected payloads.
 var projectManifests = map[string]string{
 	nexusManifest:  "nexus.yaml",
 	goModManifest:  "go.mod",
@@ -76,20 +85,58 @@ var projectManifests = map[string]string{
 	dotnetManifest: ".csproj",
 }
 
-// ── WATCHER CONFIG ────────────────────────────────────────────────────────────
+// ── DEBOUNCE MAP ─────────────────────────────────────────────────────────────
 
-// WatchMode controls what a directory watch target publishes.
+// debounceMap is a goroutine-safe map of path → pending timer.
+//
+// The event loop (single goroutine) calls Reset to arm or re-arm a timer.
+// The AfterFunc callback (separate goroutine) calls Delete before
+// dispatching, ensuring the map entry is removed under the lock before
+// any handler runs.
+type debounceMap struct {
+	mu     sync.Mutex
+	timers map[string]*time.Timer
+}
+
+func newDebounceMap() *debounceMap {
+	return &debounceMap{timers: make(map[string]*time.Timer)}
+}
+
+// Reset stops any existing timer for path, then sets a new one that calls fn
+// after delay. Safe to call from the event loop goroutine only.
+func (d *debounceMap) Reset(path string, delay time.Duration, fn func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if t, ok := d.timers[path]; ok {
+		t.Stop()
+	}
+	d.timers[path] = time.AfterFunc(delay, func() {
+		d.Delete(path)
+		fn()
+	})
+}
+
+// Delete removes the timer entry for path. Called by the AfterFunc callback.
+func (d *debounceMap) Delete(path string) {
+	d.mu.Lock()
+	delete(d.timers, path)
+	d.mu.Unlock()
+}
+
+// ── WATCH MODE ────────────────────────────────────────────────────────────────
+
+// WatchMode controls which event set a directory target publishes.
 type WatchMode int
 
 const (
-	// WatchModeDropFolder publishes drop intelligence topics (existing behaviour).
+	// WatchModeDropFolder publishes drop intelligence topics.
 	WatchModeDropFolder WatchMode = iota
 
 	// WatchModeWorkspace publishes workspace change topics (ADR-002).
 	WatchModeWorkspace
 )
 
-// WatchTarget is a directory + mode pair.
+// WatchTarget is a directory + mode pair passed to NewMulti.
 type WatchTarget struct {
 	Dir  string
 	Mode WatchMode
@@ -104,7 +151,7 @@ type Watcher struct {
 	events  *state.EventWriter
 }
 
-// New creates a Watcher for a single drop folder directory.
+// New creates a Watcher for a single drop-folder directory.
 // Preserves backwards compatibility with all existing call sites.
 func New(watchDir string, bus *eventbus.Bus, store state.Storer) *Watcher {
 	return &Watcher{
@@ -155,9 +202,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 		}
 	}
 
-	// debounce tracks files pending processing.
-	dropDebounce      := make(map[string]*time.Timer)
-	workspaceDebounce := make(map[string]*time.Timer)
+	dropDebounce      := newDebounceMap()
+	workspaceDebounce := newDebounceMap()
 
 	for {
 		select {
@@ -179,7 +225,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 			}
 
 			absPath := filepath.Clean(event.Name)
-			mode := w.modeForPath(absPath)
+			mode    := w.modeForPath(absPath)
 
 			if isDir(absPath) || isHidden(absPath) {
 				continue
@@ -190,28 +236,21 @@ func (w *Watcher) Run(ctx context.Context) error {
 				if !isCreateOrWrite(event.Op) {
 					continue
 				}
-				if t, exists := dropDebounce[absPath]; exists {
-					t.Stop()
-				}
-				dropDebounce[absPath] = time.AfterFunc(debounceDelay, func() {
-					delete(dropDebounce, absPath)
+				dropDebounce.Reset(absPath, debounceDelay, func() {
 					w.handleDropFile(absPath)
 				})
 
 			case WatchModeWorkspace:
-				if t, exists := workspaceDebounce[absPath]; exists {
-					t.Stop()
-				}
-				workspaceDebounce[absPath] = time.AfterFunc(workspaceDebounceDelay, func() {
-					delete(workspaceDebounce, absPath)
-					w.handleWorkspaceEvent(absPath, event.Op)
+				op := event.Op // capture for closure
+				workspaceDebounce.Reset(absPath, workspaceDebounceDelay, func() {
+					w.handleWorkspaceEvent(absPath, op)
 				})
 			}
 		}
 	}
 }
 
-// ── DROP HANDLER (existing behaviour) ────────────────────────────────────────
+// ── DROP HANDLER ─────────────────────────────────────────────────────────────
 
 func (w *Watcher) handleDropFile(absPath string) {
 	info, err := os.Stat(absPath)
@@ -221,9 +260,10 @@ func (w *Watcher) handleDropFile(absPath string) {
 	if info.IsDir() {
 		return
 	}
-	if info.Size() > maxFileSizeBytes {
+	if info.Size() > maxDropFileSizeBytes {
 		_ = w.events.SystemAlert("warn",
-			fmt.Sprintf("drop: skipping oversized file %s (%d bytes)", info.Name(), info.Size()),
+			fmt.Sprintf("drop: skipping oversized file %s (%d bytes)",
+				info.Name(), info.Size()),
 			map[string]string{"path": absPath},
 		)
 		return
@@ -247,9 +287,9 @@ func (w *Watcher) handleDropFile(absPath string) {
 
 // handleWorkspaceEvent publishes workspace topics for the given filesystem event.
 func (w *Watcher) handleWorkspaceEvent(absPath string, op fsnotify.Op) {
-	now := time.Now().UTC()
+	now  := time.Now().UTC()
 	name := filepath.Base(absPath)
-	ext := filepath.Ext(absPath)
+	ext  := filepath.Ext(absPath)
 
 	var sizeBytes int64
 	if info, err := os.Stat(absPath); err == nil {
@@ -264,24 +304,18 @@ func (w *Watcher) handleWorkspaceEvent(absPath string, op fsnotify.Op) {
 		EventAt:   now,
 	}
 
-	// Publish specific file event.
 	switch {
 	case isCreateOrWrite(op) && sizeBytes > 0:
-		// Distinguish create vs modify: if file very recently appeared use Created.
-		// For simplicity we use Created for new files and Modified for existing ones.
-		// fsnotify.Create maps to Created; fsnotify.Write maps to Modified.
 		if op&fsnotify.Create != 0 {
 			w.bus.PublishAsync(eventbus.TopicWorkspaceFileCreated, "workspace", payload)
 		} else {
 			w.bus.PublishAsync(eventbus.TopicWorkspaceFileModified, "workspace", payload)
 		}
-
 	case op&fsnotify.Remove != 0 || op&fsnotify.Rename != 0:
 		payload.SizeBytes = 0
 		w.bus.PublishAsync(eventbus.TopicWorkspaceFileDeleted, "workspace", payload)
 	}
 
-	// Always publish the debounced workspace.updated batch signal.
 	w.bus.PublishAsync(eventbus.TopicWorkspaceUpdated, "workspace",
 		eventbus.WorkspaceUpdatedPayload{
 			WatchDir: filepath.Dir(absPath),
@@ -289,8 +323,6 @@ func (w *Watcher) handleWorkspaceEvent(absPath string, op fsnotify.Op) {
 		},
 	)
 
-	// Detect project manifests — publish project detected if this is a known
-	// manifest file appearing for the first time (create event only).
 	if op&fsnotify.Create != 0 {
 		if detectedBy, isManifest := projectManifests[name]; isManifest {
 			w.bus.PublishAsync(eventbus.TopicWorkspaceProjectDetected, "workspace",
@@ -311,8 +343,8 @@ func (w *Watcher) handleWorkspaceEvent(absPath string, op fsnotify.Op) {
 func (w *Watcher) modeForPath(absPath string) WatchMode {
 	dir := filepath.Dir(absPath)
 	for _, t := range w.targets {
-		if strings.HasPrefix(dir+string(filepath.Separator), t.Dir+string(filepath.Separator)) ||
-			dir == t.Dir {
+		sep := string(filepath.Separator)
+		if strings.HasPrefix(dir+sep, t.Dir+sep) || dir == t.Dir {
 			return t.Mode
 		}
 	}
