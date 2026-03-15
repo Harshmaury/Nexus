@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.4.0
+# @version: 2.5.0
 # @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -17,16 +17,16 @@ Paste the output block into Claude. Confirm + ask for task.
 
 ## SESSION KEY
 
-Format:  NX-<git-short-hash>-<YYYYMMDD>
+Format: NX-<git-short-hash>-<YYYYMMDD>
 Claude: fetch this file → match hash → confirm → ask for task.
 
 ---
 
 ## IDENTITY
 
-Developer:  Harsh Maury  |  GitHub: https://github.com/Harshmaury
-Nexus:      https://github.com/Harshmaury/Nexus
-OS:         Ubuntu 24.04 (WSL2) + Windows 11
+Developer: Harsh Maury  |  GitHub: https://github.com/Harshmaury
+Nexus: https://github.com/Harshmaury/Nexus
+OS: Ubuntu 24.04 (WSL2) + Windows 11
 
 ---
 
@@ -41,53 +41,51 @@ Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
 ## BUILD STATUS
 # Last verified: 2026-03-15
 
-✅ Phase 1   Daemon core (store, bus, engine, controllers, socket, CLI)
-✅ Phase 2   Drop intelligence (watcher, detector, renamer, router, pipeline)
-✅ Phase 3   Bug fixes (go.mod, Storer interface, notifier WSL fix)
-✅ Phase 7   Internal hardening (migrations, back-off, async events, WaitGroup)
-✅ Phase 8   REST API (127.0.0.1:8080, key auth pending)
-✅ Phase 9   Runtime providers (Process PID-file, K8s kubectl scale-to-0)
-✅ Phase 10  Drop approve/reject (pendingApprovals map, engx drop commands)
-✅ Phase 11  Dependency graph (depends_on column, Kahn topo sort, deferred start)
+✅ Phase 1   Daemon core
+✅ Phase 2   Drop intelligence (4-layer detector)
+✅ Phase 3   Bug fixes
+✅ Phase 7   Internal hardening
+✅ Phase 8   REST API (127.0.0.1:8080)
+✅ Phase 9   Runtime providers (Process, K8s)
+✅ Phase 10  Drop approve/reject
+✅ Phase 11  Dependency graph (Kahn topo sort)
+✅ Phase 12  Observability (metrics, engx watch)
 
-✅ Phase 12  Observability (2026-03-15)
-  internal/telemetry/metrics.go   atomic counters + gauges, zero new deps
-  internal/daemon/engine.go       metrics wired — per-action counters, gauges
-  internal/api/server.go          GET /metrics → JSON snapshot
-  cmd/engxd/main.go               telemetry.New() wired into engine + API
-  cmd/engx/main.go                engx watch — live terminal dashboard (2s poll)
+✅ Phase 13  Drop Intelligence v2 (2026-03-15)
+  internal/intelligence/classifier.go   Naive Bayes, tokenise, sigmoid confidence
+                                         Train() from download_log, JSON persistence
+                                         ~/.nexus/classifier.json
+  internal/intelligence/detector.go     Layer 5 (ML) added, weight=0.30
+                                         NewDetector now accepts *Classifier
+  internal/state/storer.go              GetRecentDownloads added to interface
+  internal/daemon/server.go             CmdDropTrain handler
+                                         Classifier injected via ServerConfig
 
 ---
 
-## METRICS ENDPOINT
+## DROP TRAIN WORKFLOW
 
-  curl http://127.0.0.1:8080/metrics
+  engx drop train
 
-  {
-    "uptime_seconds": 142.3,
-    "reconcile_cycles_total": 28,
-    "services_started_total": 4,
-    "services_stopped_total": 1,
-    "services_crashed_total": 0,
-    "services_deferred_total": 2,
-    "reconcile_errors_total": 0,
-    "services_running": 4,
-    "services_in_maintenance": 0
-  }
+  Daemon reads download_log (action=moved|approved, up to 2000 rows)
+  → Multinomial Naive Bayes trained on filename tokens per project
+  → Model saved to ~/.nexus/classifier.json
+  → Returns: examples_used, vocab_size, project_docs, trained_at
 
-## WATCH COMMAND
+  Layer 5 activates automatically on next file drop.
+  Re-train any time more files have been routed.
 
-  engx watch              (refreshes every 2s)
-  engx watch -i 5s        (custom interval)
+## MODEL LOCATION
 
-  Shows: all projects, per-service desired/actual/health, fail count, summary bar.
-  Symbols: ● running  ✗ crashed  ⚠ maintenance  ↻ recovering  ○ stopped
+  ~/.nexus/classifier.json   (created by engx drop train)
+  ~/.nexus/pids/             (process provider PID files)
+  ~/.nexus/logs/             (process provider stdout/stderr)
+  ~/.nexus/nexus.db          (SQLite state store)
 
 ---
 
 ## ROADMAP
 
-Phase 13 — Drop Intelligence v2 (ML classifier, TF-IDF, engx drop train)
 Phase 14 — Multi-machine agent mode (gRPC, remote state sync)
 
 ---
@@ -95,8 +93,7 @@ Phase 14 — Multi-machine agent mode (gRPC, remote state sync)
 ## CHANGELOG
 
 2026-03-11  v1.0  Created
-2026-03-14  v2.0  Paths corrected, 3-file split, 9 bugs fixed
-2026-03-14  v2.1  Phase 9 — providers
-2026-03-14  v2.2  Phase 10 — drop approve/reject
+2026-03-14  v2.0–2.2  Phases 9–10
 2026-03-15  v2.3  Phase 11 — dependency graph
 2026-03-15  v2.4  Phase 12 — metrics + engx watch
+2026-03-15  v2.5  Phase 13 — Naive Bayes classifier, engx drop train

@@ -1,13 +1,10 @@
 // @nexus-project: nexus
 // @nexus-path: internal/state/storer.go
-// Storer is the interface all controllers and the reconciler depend on.
-// *state.Store satisfies this interface automatically (duck typing).
-// Tests supply a mock; Phase 8 HTTP handlers do the same.
-//
-// Phase 11 addition:
-//   GetServiceDependencies — returns the depends_on list for a service
-//   SetServiceDependencies — writes the depends_on list for a service
-//   Both are used by the reconciler engine for topological sort.
+// Phase 13 addition:
+//   GetRecentDownloads added to the interface.
+//   *Store.GetRecentDownloads is implemented in db.go but was not
+//   exposed via the interface. The train command reads download_log
+//   through the daemon — this enables mock stores in tests.
 package state
 
 import "time"
@@ -53,13 +50,9 @@ type Storer interface {
 
 	// ── Download log ─────────────────────────────────────────
 	LogDownload(d *DownloadLog) error
+	GetRecentDownloads(limit int) ([]*DownloadLog, error)
 
-	// ── Dependencies (Phase 11) ───────────────────────────────
-	// GetServiceDependencies returns the IDs of services that must be
-	// running before serviceID is started. Returns nil if none declared.
+	// ── Dependencies ─────────────────────────────────────────
 	GetServiceDependencies(serviceID string) ([]string, error)
-
-	// SetServiceDependencies writes the depends_on list for a service.
-	// Called by engx register when .nexus.yaml declares depends_on.
 	SetServiceDependencies(serviceID string, deps []string) error
 }
