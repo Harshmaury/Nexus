@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.1.0
+# @version: 2.2.0
 # @updated: 2026-03-14
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -12,19 +12,13 @@ cd ~/workspace/projects/apps/nexus && ./scripts/verify.sh
 ```
 
 Paste the output block into Claude. Claude reads KEY + this file and is oriented.
-No re-explanation. No wasted tokens.
 
 ---
 
 ## SESSION KEY
 
 Format:  NX-<git-short-hash>-<YYYYMMDD>
-Example: NX-885a15d-20260314
-
-Encodes:
-  NX       → Nexus project
-  885a15d  → exact commit (7 chars)
-  20260314 → session date
+Example: NX-2907c56-20260314
 
 Claude protocol on receiving a key:
   1. Fetch this file from raw GitHub URL in the block
@@ -59,56 +53,41 @@ Git:      2.43.0   → WSL2
 ---
 
 ## BUILD STATUS
-# Update after completing each phase component
-# Last verified: 2026-03-14 — branch: phase8-api — 9 bugs fixed, build clean
+# Last verified: 2026-03-14 — branch: phase10-drop-approve
 
 ### ✅ Phase 1 — Daemon Core
-  state/db.go               SQLite store + versioned migrations
-  eventbus/bus.go           In-process pub/sub, PublishAsync, deadlock-safe
-  pkg/runtime/provider.go   Provider interface
-  daemon/engine.go          Reconciler loop (desired vs actual)
-  controllers/health.go     Health polling — observational only
-  controllers/recovery.go   Restart policy + persisted back-off
-  daemon/server.go          Unix socket server, JSON protocol
-  config/policy.go          Single source for all policy constants
-  config/env.go             EnvOrDefault, ExpandHome helpers
-  cmd/engxd/main.go         Daemon wiring + WaitGroup shutdown
-  cmd/engx/main.go          CLI — register, project, services, events
-
 ### ✅ Phase 2 — Drop Intelligence
-  watcher/watcher.go        inotify file watcher, debounce
-  intelligence/detector.go  4-layer weighted confidence scoring
-  intelligence/renamer.go   Canonical filename convention
-  intelligence/router.go    Confidence router — non-blocking (bus-based approval)
-  intelligence/notifier.go  Notifier interface — LinuxNotifier + NullNotifier
-  intelligence/logger.go    Download audit log
-  intelligence/pipeline.go  Full pipeline coordinator
-
-### ✅ Phase 3 — Bug Fixes (2026-03-14)
-  9 pre-build bugs resolved — go.mod version, Storer interface, notifier WSL fix
-
+### ✅ Phase 3 — Bug Fixes (go.mod, Storer interface, notifier)
 ### ✅ Phase 7 — Internal Hardening
-  Versioned migrations, persisted back-off, async crash events,
-  WaitGroup shutdown, non-blocking router, policy dedup
+### ✅ Phase 8 — REST API (127.0.0.1, API key auth pending)
+### ✅ Phase 9 — Runtime Providers (Process + K8s)
 
-### ✅ Phase 8 — REST API
-  api/server.go             HTTP server + graceful shutdown (config.ShutdownTimeout)
-  api/handler/projects.go   GET/POST projects
-  api/handler/services.go   GET services
-  api/handler/events.go     GET events
-  api/middleware/           Logging + panic recovery
-  Binds: 127.0.0.1 — API key auth pending
+### ✅ Phase 10 — Drop Approve/Reject (2026-03-14)
+  internal/daemon/server.go   CmdDropApprove, CmdDropReject, CmdDropPending
+                              pendingApprovals map — bus subscriber, thread-safe
+  cmd/engx/main.go            engx drop pending / approve / reject
+                              basename resolution — no full path needed
 
-### ✅ Phase 9 — Runtime Providers (2026-03-14)
-  pkg/runtime/process/provider.go  os/exec, PID files, SIGTERM→SIGKILL
-  pkg/runtime/k8s/provider.go      kubectl binary, scale-to-0 stop
-  cmd/engxd/main.go                Process + K8s providers wired at startup
+---
+
+## DROP APPROVAL FLOW (complete)
+
+```
+file lands in drop folder
+  → watcher detects → TopicFileDropped
+  → detector scores confidence
+  → router: confidence 0.40–0.79
+  → TopicDropPendingApproval → server.pendingApprovals map
+
+engx drop pending           ← lists waiting files
+engx drop approve <file>    ← moves to destination, TopicFileRouted
+engx drop reject  <file>    ← tags UNROUTED__, TopicFileQuarantined
+```
 
 ---
 
 ## ROADMAP
 
-Phase 10 — Drop approve/reject CLI (engx drop approve/reject — socket commands)
 Phase 11 — Project dependency graph (depends_on in .nexus.yaml, ordered startup)
 Phase 12 — Observability (OTel spans, Prometheus counters, bubbletea TUI)
 Phase 13 — Drop Intelligence v2 (ML layer 5, TF-IDF, engx drop train)
@@ -118,7 +97,8 @@ Phase 14 — Multi-machine agent mode (gRPC, remote state sync)
 
 ## CHANGELOG
 
-2026-03-11  v1.0  Created — workspace at ~/dev/nexus (old)
+2026-03-11  v1.0  Created
 2026-03-13  v1.2  Phase 7+8 complete, 42 tests
-2026-03-14  v2.0  Paths corrected to ~/workspace, split into 3 files, 9 bugs fixed
-2026-03-14  v2.1  Phase 9 complete — Process + K8s providers, engxd wired
+2026-03-14  v2.0  Paths corrected, split into 3 files, 9 bugs fixed
+2026-03-14  v2.1  Phase 9 — Process + K8s providers
+2026-03-14  v2.2  Phase 10 — Drop approve/reject loop complete
