@@ -1,5 +1,14 @@
 // @nexus-project: nexus
 // @nexus-path: internal/daemon/engine.go
+// NX-H-01: publishResult is now context-aware.
+//   The old implementation had an unconditional blocking send as its
+//   last fallback: if the channel was full AND the drain failed (consumer
+//   gone), the reconciler goroutine blocked forever. Under shutdown the
+//   logResults goroutine exits first, leaving the reconciler stuck.
+//   Fix: publishResult accepts ctx and selects on ctx.Done() alongside
+//   the channel send — if context is cancelled the result is dropped
+//   silently, which is correct behaviour during shutdown.
+//
 // Package daemon contains the Nexus reconciler — the heart of engxd.
 //
 // Phase 12 addition — metrics wired into reconcile:
@@ -110,14 +119,14 @@ func (e *Engine) Run(ctx context.Context) error {
 	ticker := time.NewTicker(e.interval)
 	defer ticker.Stop()
 
-	e.publishResult(e.reconcile(ctx))
+	e.publishResult(ctx, e.reconcile(ctx))
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			e.publishResult(e.reconcile(ctx))
+			e.publishResult(ctx, e.reconcile(ctx))
 		}
 	}
 }
@@ -409,15 +418,30 @@ func (e *Engine) setActualStateSafe(serviceID string, s state.ServiceState, trac
 	}
 }
 
-func (e *Engine) publishResult(result ReconcileResult) {
+// publishResult sends result to the results channel without blocking forever.
+//
+// Strategy (NX-H-01):
+//  1. Non-blocking send — succeeds immediately if there is buffer space.
+//  2. If full: drain one stale result to make room, then attempt a
+//     context-aware send. If ctx is already cancelled (shutdown in progress),
+//     the result is dropped — callers have stopped listening and the data
+//     is no longer useful.
+func (e *Engine) publishResult(ctx context.Context, result ReconcileResult) {
 	select {
 	case e.results <- result:
+		return // fast path — buffer had space
 	default:
-		select {
-		case <-e.results:
-		default:
-		}
-		e.results <- result
+	}
+	// Buffer full — drain one stale entry to make room.
+	select {
+	case <-e.results:
+	default:
+	}
+	// Context-aware send: drop silently on shutdown rather than blocking.
+	select {
+	case e.results <- result:
+	case <-ctx.Done():
+		// Shutdown in progress — consumer has exited, drop the result.
 	}
 }
 
