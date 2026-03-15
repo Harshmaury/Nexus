@@ -11,6 +11,12 @@
 //   NEXUS_WORKSPACE env var controls the workspace root (default ~/workspace).
 //   NEXUS_DROP_DIR  env var controls the drop folder  (default ~/nexus-drop).
 //
+// NX-Fix-04: Classifier wired into daemon server (was always nil — engx drop train broken).
+//   intelligence.NewClassifier() is constructed at step 7 and injected into
+//   daemon.ServerConfig.Classifier. The same instance is shared with the
+//   intelligence pipeline (Detector layer 5) so Train and Classify operate
+//   on the same model. Goroutine safety provided by NX-Fix-03 (sync.RWMutex).
+//
 // Component startup order:
 //  1. Metrics
 //  2. State store (SQLite)
@@ -18,10 +24,11 @@
 //  4. Providers (Docker, Process, K8s)
 //  5. Controllers (project, health, recovery)
 //  6. Reconciler engine
-//  7. Unix socket server
-//  8. HTTP API server
-//  9. Watcher (drop folder + workspace — ADR-002)
-// 10. Result logger
+//  7. Classifier (Drop Intelligence layer 5)  ← new
+//  8. Unix socket server
+//  9. HTTP API server
+// 10. Watcher (drop folder + workspace — ADR-002)
+// 11. Result logger
 package main
 
 import (
@@ -38,6 +45,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
+	"github.com/Harshmaury/Nexus/internal/intelligence"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/Harshmaury/Nexus/internal/telemetry"
 	"github.com/Harshmaury/Nexus/internal/watcher"
@@ -121,16 +129,23 @@ func run(logger *log.Logger) error {
 		Interval:  config.DurationEnvOrDefault("NEXUS_RECONCILE_INTERVAL", config.DefaultReconcileInterval),
 	})
 
-	// ── 7. UNIX SOCKET SERVER ─────────────────────────────────────────────────
+	// ── 7. CLASSIFIER (Drop Intelligence layer 5) ───────────────────────────
+	// NewClassifier loads an existing model from ~/.nexus/classifier.json if
+	// present; otherwise the classifier is inactive until engx drop train runs.
+	classifier := intelligence.NewClassifier()
+	logger.Printf("classifier ready (trained=%v)", classifier.ModelInfo() != nil)
+
+	// ── 8. UNIX SOCKET SERVER ─────────────────────────────────────────────────
 	socketPath := config.EnvOrDefault("NEXUS_SOCKET", daemon.DefaultSocketPath)
 	server := daemon.NewServer(daemon.ServerConfig{
 		SocketPath:  socketPath,
 		Store:       store,
 		Bus:         bus,
 		ProjectCtrl: projectCtrl,
+		Classifier:  classifier,
 	})
 
-	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
+	// ── 9. HTTP API SERVER ───────────────────────────────────────────────────
 	httpAddr := config.EnvOrDefault("NEXUS_HTTP_ADDR", config.DefaultHTTPAddr)
 	apiServer := api.NewServer(api.ServerConfig{
 		Addr:        httpAddr,
@@ -140,7 +155,7 @@ func run(logger *log.Logger) error {
 		Logger:      logger,
 	})
 
-	// ── 9. WATCHER (drop folder + workspace — ADR-002) ────────────────────────
+	// ── 10. WATCHER (drop folder + workspace — ADR-002) ───────────────────────
 	dropDir       := config.ExpandHome(config.EnvOrDefault("NEXUS_DROP_DIR", "~/nexus-drop"))
 	workspaceRoot := config.ExpandHome(config.EnvOrDefault("NEXUS_WORKSPACE", "~/workspace"))
 
