@@ -6,8 +6,6 @@
 // It registers itself with the central engxd, receives desired state
 // for its services, and reports actual state back via heartbeats.
 //
-// NX-Fix-06: v4 migration moved to db.go allMigrations. init() removed.
-//
 // Schema (migration v4):
 //   agents table — one row per registered agent
 //   id          TEXT PK  — stable machine identifier (hostname or user-set)
@@ -32,8 +30,21 @@ import (
 
 const agentOnlineThreshold = 30 * time.Second
 
-// NX-Fix-06: v4 migration (agents table) moved to db.go allMigrations.
-// init() removed — ordering is guaranteed by slice position in db.go.
+// ── MIGRATION V4 ─────────────────────────────────────────────────────────────
+
+func init() {
+	allMigrations = append(allMigrations,
+		schemaVersion{4, `CREATE TABLE IF NOT EXISTS agents (
+			id            TEXT PRIMARY KEY,
+			hostname      TEXT NOT NULL DEFAULT '',
+			address       TEXT NOT NULL DEFAULT '',
+			token         TEXT NOT NULL DEFAULT '',
+			last_seen     DATETIME,
+			registered_at DATETIME NOT NULL
+		)`},
+		schemaVersion{4, `CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen)`},
+	)
+}
 
 // ── MODEL ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +101,22 @@ func (s *Store) GetAgent(id string) (*Agent, error) {
 		 FROM agents WHERE id = ?`, id,
 	)
 	return scanAgent(row)
+}
+
+// GetAgentToken returns the stored token for an agent.
+// Returns ("", false, nil) when the agent is not registered.
+// Used by validateToken — fetches only the token column, never the full record.
+// NX-H-02: replaces GetAgent in the hot auth path to minimise data exposure.
+func (s *Store) GetAgentToken(id string) (string, bool, error) {
+	var token string
+	err := s.db.QueryRow(`SELECT token FROM agents WHERE id = ?`, id).Scan(&token)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get agent token %s: %w", id, err)
+	}
+	return token, true, nil
 }
 
 // GetAllAgents returns every registered agent with derived online status.

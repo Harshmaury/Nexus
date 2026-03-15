@@ -1,5 +1,10 @@
 // @nexus-project: nexus
 // @nexus-path: internal/api/handler/agents.go
+// NX-H-02: validateToken now calls store.GetAgentToken instead of store.GetAgent.
+//   GetAgent fetches the full agent record (hostname, address, token) just to
+//   compare one field. GetAgentToken fetches only the token column — minimal
+//   query, minimal data on the stack in the hot auth path.
+//
 // NX-Fix-05: validateToken now uses subtle.ConstantTimeCompare.
 //   Plain string equality (a.Token != incoming) is vulnerable to timing
 //   attacks — an attacker on a local network can measure response latency
@@ -219,6 +224,9 @@ func (h *AgentsHandler) Actual(w http.ResponseWriter, r *http.Request) {
 
 // validateToken checks X-Nexus-Token against the stored agent token.
 // Returns false and writes a 401 if validation fails.
+//
+// NX-H-02: uses GetAgentToken (SELECT token only) instead of GetAgent
+// (SELECT *) — minimal query, minimal data exposure on the auth hot path.
 func (h *AgentsHandler) validateToken(w http.ResponseWriter, r *http.Request, agentID string) bool {
 	incoming := r.Header.Get("X-Nexus-Token")
 	if incoming == "" {
@@ -226,15 +234,18 @@ func (h *AgentsHandler) validateToken(w http.ResponseWriter, r *http.Request, ag
 		return false
 	}
 
-	a, err := h.store.GetAgent(agentID)
-	if err != nil || a == nil {
+	storedToken, exists, err := h.store.GetAgentToken(agentID)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, fmt.Errorf("token lookup failed"))
+		return false
+	}
+	if !exists {
 		respondErr(w, http.StatusNotFound, fmt.Errorf("agent %q not registered", agentID))
 		return false
 	}
 
-	// subtle.ConstantTimeCompare prevents timing-based token extraction.
-	// Both slices are compared in constant time regardless of where they differ.
-	if subtle.ConstantTimeCompare([]byte(a.Token), []byte(incoming)) != 1 {
+	// subtle.ConstantTimeCompare prevents timing-based token extraction (NX-Fix-05).
+	if subtle.ConstantTimeCompare([]byte(storedToken), []byte(incoming)) != 1 {
 		respondErr(w, http.StatusUnauthorized, fmt.Errorf("invalid token"))
 		return false
 	}

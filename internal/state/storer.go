@@ -58,4 +58,5 @@ type Storer interface {
 	HeartbeatAgent(agentID string) error
 	GetAgent(id string) (*Agent, error)
 	GetAllAgents() ([]*Agent, error)
+	GetAgentToken(id string) (string, bool, error) // token, exists, err — NX-H-02
 }
