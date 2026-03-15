@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.9.0
+# @version: 2.10.0
 # @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -47,6 +47,10 @@ Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
   cmd/engxd/main.go           workspace watcher wired (NEXUS_WORKSPACE env var)
 
 ✅ NX-Fix-01     Debounce map data race eliminated (2026-03-16)
+✅ NX-Fix-02     moveFile/copyFile extracted to pkg/osutil (2026-03-16)
+  pkg/osutil/file.go                single MoveFile impl, io.CopyBuffer
+  internal/intelligence/router.go   local funcs removed, uses osutil
+  internal/daemon/server.go         local func removed, uses osutil
   internal/watcher/watcher.go debounceMap struct with sync.Mutex
                                AfterFunc callbacks serialised via Delete()
                                Verified clean with go build ./...
@@ -103,3 +107,4 @@ Future Nexus work is driven by ADRs when new platform requirements emerge.
 2026-03-15  v2.8  fix: engine_test.go — deterministic partial failure test
 2026-03-15  v2.7  ADR-002 impl — workspace event topics + watcher extension
 2026-03-16  v2.9  fix: NX-Fix-01 — debounce map data race in watcher.go
+2026-03-16  v2.10 fix: NX-Fix-02 — moveFile extracted to pkg/osutil, removed duplication

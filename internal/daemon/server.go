@@ -1,5 +1,7 @@
 // @nexus-project: nexus
 // @nexus-path: internal/daemon/server.go
+// NX-Fix-02: local moveFile removed — delegated to pkg/osutil.MoveFile.
+//
 // Phase 13 addition:
 //   CmdDropTrain — reads download_log (action=moved or approved),
 //   passes training examples to the Classifier, saves the model.
@@ -22,6 +24,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/intelligence"
 	"github.com/Harshmaury/Nexus/internal/state"
+	"github.com/Harshmaury/Nexus/pkg/osutil"
 )
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
@@ -320,7 +323,7 @@ func (s *Server) handleDropApprove(raw json.RawMessage) (json.RawMessage, error)
 	if !ok {
 		return nil, fmt.Errorf("no pending approval for %q", filepath.Base(p.FilePath))
 	}
-	if err := moveFile(payload.FilePath, payload.Destination); err != nil {
+	if err := osutil.MoveFile(payload.FilePath, payload.Destination); err != nil {
 		return nil, fmt.Errorf("move file: %w", err)
 	}
 	s.bus.Publish(eventbus.TopicFileRouted, "drop", eventbus.FileRoutedPayload{
@@ -443,37 +446,6 @@ func (s *Server) popPending(filePath string) (eventbus.DropApprovalPayload, bool
 
 // ── FILE MOVE ─────────────────────────────────────────────────────────────────
 
-func moveFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return fmt.Errorf("create dir: %w", err)
-	}
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open src: %w", err)
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return fmt.Errorf("create dst: %w", err)
-	}
-	defer out.Close()
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := in.Read(buf)
-		if n > 0 {
-			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
-				return fmt.Errorf("write: %w", writeErr)
-			}
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	return os.Remove(src)
-}
 
 func jsonMarshal(v any) (json.RawMessage, error) {
 	b, err := json.Marshal(v)
