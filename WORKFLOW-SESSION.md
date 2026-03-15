@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.5.0
+# @version: 2.6.0
 # @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -41,59 +41,73 @@ Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
 ## BUILD STATUS
 # Last verified: 2026-03-15
 
-✅ Phase 1   Daemon core
+✅ Phase 1   Daemon core (store, bus, engine, controllers, socket, CLI)
 ✅ Phase 2   Drop intelligence (4-layer detector)
-✅ Phase 3   Bug fixes
+✅ Phase 3   Bug fixes (go.mod, Storer interface, notifier)
 ✅ Phase 7   Internal hardening
 ✅ Phase 8   REST API (127.0.0.1:8080)
 ✅ Phase 9   Runtime providers (Process, K8s)
 ✅ Phase 10  Drop approve/reject
 ✅ Phase 11  Dependency graph (Kahn topo sort)
-✅ Phase 12  Observability (metrics, engx watch)
+✅ Phase 12  Observability (metrics + engx watch)
+✅ Phase 13  Drop Intelligence v2 (Naive Bayes, engx drop train)
 
-✅ Phase 13  Drop Intelligence v2 (2026-03-15)
-  internal/intelligence/classifier.go   Naive Bayes, tokenise, sigmoid confidence
-                                         Train() from download_log, JSON persistence
-                                         ~/.nexus/classifier.json
-  internal/intelligence/detector.go     Layer 5 (ML) added, weight=0.30
-                                         NewDetector now accepts *Classifier
-  internal/state/storer.go              GetRecentDownloads added to interface
-  internal/daemon/server.go             CmdDropTrain handler
-                                         Classifier injected via ServerConfig
+✅ Phase 14  Multi-machine agent mode (2026-03-15)
+  internal/state/db_agents.go        migration v4: agents table
+  internal/state/storer.go           RegisterAgent, HeartbeatAgent,
+                                     GetAgent, GetAllAgents in interface
+  internal/agent/client.go           engxa agent loop: register, sync,
+                                     heartbeat, local reconcile
+  internal/api/handler/agents.go     /agents routes: register, heartbeat,
+                                     desired, actual, list
+  internal/api/server.go             agent routes wired into HTTP server
+  cmd/engxa/main.go                  standalone agent binary
+  cmd/engx/main.go                   engx agents command
 
 ---
 
-## DROP TRAIN WORKFLOW
+## AGENT USAGE
 
-  engx drop train
+On remote machine:
+  go build -o ~/bin/engxa ./cmd/engxa/
+  engxa --server http://192.168.1.10:8080 --token <secret>
 
-  Daemon reads download_log (action=moved|approved, up to 2000 rows)
-  → Multinomial Naive Bayes trained on filename tokens per project
-  → Model saved to ~/.nexus/classifier.json
-  → Returns: examples_used, vocab_size, project_docs, trained_at
+Central machine:
+  engx agents                        list registered agents + online status
 
-  Layer 5 activates automatically on next file drop.
-  Re-train any time more files have been routed.
+Assign a service to a remote agent (in svc.Config JSON):
+  {"image":"postgres:16", "agent_id":"my-server-1"}
 
-## MODEL LOCATION
+The service will be routed to agent "my-server-1" and reconciled there.
+The central store remains the source of truth for desired state.
 
-  ~/.nexus/classifier.json   (created by engx drop train)
-  ~/.nexus/pids/             (process provider PID files)
-  ~/.nexus/logs/             (process provider stdout/stderr)
-  ~/.nexus/nexus.db          (SQLite state store)
+---
+
+## ALL BINARIES
+
+  ~/bin/engxd   central daemon
+  ~/bin/engx    CLI client
+  ~/bin/engxa   remote agent
+  ~/bin/kubectl
+  ~/bin/minikube
 
 ---
 
 ## ROADMAP
 
-Phase 14 — Multi-machine agent mode (gRPC, remote state sync)
+All planned phases complete. Future work as needed:
+  - API key auth (Phase 8 remainder — ~/.nexus/api_key header validation)
+  - engx drop train watch mode (auto-retrain on N new log entries)
+  - TLS for agent↔server communication
+  - Prometheus scrape target (swap JSON metrics for client_golang)
 
 ---
 
 ## CHANGELOG
 
 2026-03-11  v1.0  Created
-2026-03-14  v2.0–2.2  Phases 9–10
+2026-03-14  v2.0–v2.2  Phases 9–10
 2026-03-15  v2.3  Phase 11 — dependency graph
-2026-03-15  v2.4  Phase 12 — metrics + engx watch
-2026-03-15  v2.5  Phase 13 — Naive Bayes classifier, engx drop train
+2026-03-15  v2.4  Phase 12 — metrics + watch
+2026-03-15  v2.5  Phase 13 — Naive Bayes classifier
+2026-03-15  v2.6  Phase 14 — multi-machine agent mode (all phases complete)

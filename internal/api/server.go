@@ -1,10 +1,8 @@
 // @nexus-project: nexus
 // @nexus-path: internal/api/server.go
-// Phase 12 addition:
-//   ServerConfig now accepts *telemetry.Metrics.
-//   GET /metrics returns a JSON snapshot of all platform counters and gauges.
-//   Same auth boundary as the rest of the API — 127.0.0.1 only until
-//   API key auth is complete (Phase 8 remainder).
+// Phase 14 addition:
+//   All /agents routes registered.
+//   AgentsHandler injected via ServerConfig.Store (no new config field needed).
 package api
 
 import (
@@ -32,7 +30,7 @@ type ServerConfig struct {
 	Addr        string
 	Store       state.Storer
 	ProjectCtrl *controllers.ProjectController
-	Metrics     *telemetry.Metrics // optional — /metrics returns empty if nil
+	Metrics     *telemetry.Metrics
 	Logger      *log.Logger
 }
 
@@ -73,7 +71,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	s.logger.Println("HTTP API shutting down...")
 	if err := s.http.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("http server shutdown: %w", err)
+		return fmt.Errorf("http shutdown: %w", err)
 	}
 	s.logger.Println("HTTP API stopped cleanly")
 	return nil
@@ -85,16 +83,25 @@ func newRouter(cfg ServerConfig) http.Handler {
 	projectsH := handler.NewProjectsHandler(cfg.ProjectCtrl, cfg.Store)
 	servicesH := handler.NewServicesHandler(cfg.Store)
 	eventsH   := handler.NewEventsHandler(cfg.Store)
+	agentsH   := handler.NewAgentsHandler(cfg.Store)
 
-	mux.HandleFunc("GET /health",                handleHealth)
-	mux.HandleFunc("GET /metrics",               metricsHandler(cfg.Metrics))
-	mux.HandleFunc("GET /projects",              projectsH.List)
-	mux.HandleFunc("GET /projects/{id}",         projectsH.Get)
+	// ── Core routes ──────────────────────────────────────────────────────────
+	mux.HandleFunc("GET  /health",               handleHealth)
+	mux.HandleFunc("GET  /metrics",              metricsHandler(cfg.Metrics))
+	mux.HandleFunc("GET  /projects",             projectsH.List)
+	mux.HandleFunc("GET  /projects/{id}",        projectsH.Get)
 	mux.HandleFunc("POST /projects/{id}/start",  projectsH.Start)
 	mux.HandleFunc("POST /projects/{id}/stop",   projectsH.Stop)
 	mux.HandleFunc("POST /projects/register",    projectsH.Register)
-	mux.HandleFunc("GET /services",              servicesH.List)
-	mux.HandleFunc("GET /events",               eventsH.List)
+	mux.HandleFunc("GET  /services",             servicesH.List)
+	mux.HandleFunc("GET  /events",               eventsH.List)
+
+	// ── Agent routes (Phase 14) ───────────────────────────────────────────────
+	mux.HandleFunc("GET  /agents",                  agentsH.List)
+	mux.HandleFunc("POST /agents/register",         agentsH.Register)
+	mux.HandleFunc("POST /agents/{id}/heartbeat",   agentsH.Heartbeat)
+	mux.HandleFunc("GET  /agents/{id}/desired",     agentsH.Desired)
+	mux.HandleFunc("POST /agents/{id}/actual",      agentsH.Actual)
 
 	var h http.Handler = mux
 	h = middleware.Recovery(h, cfg.Logger)
@@ -108,8 +115,6 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"ok":true,"status":"healthy"}`)) //nolint:errcheck
 }
 
-// metricsHandler returns the current metrics snapshot as JSON.
-// Returns an empty snapshot if metrics is nil (daemon started without metrics).
 func metricsHandler(m *telemetry.Metrics) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

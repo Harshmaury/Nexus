@@ -1,10 +1,7 @@
 // @nexus-project: nexus
 // @nexus-path: internal/state/storer.go
-// Phase 13 addition:
-//   GetRecentDownloads added to the interface.
-//   *Store.GetRecentDownloads is implemented in db.go but was not
-//   exposed via the interface. The train command reads download_log
-//   through the daemon — this enables mock stores in tests.
+// Phase 14 addition:
+//   RegisterAgent, HeartbeatAgent, GetAgent, GetAllAgents added to interface.
 package state
 
 import "time"
@@ -55,4 +52,10 @@ type Storer interface {
 	// ── Dependencies ─────────────────────────────────────────
 	GetServiceDependencies(serviceID string) ([]string, error)
 	SetServiceDependencies(serviceID string, deps []string) error
+
+	// ── Agents ───────────────────────────────────────────────
+	RegisterAgent(a *Agent) error
+	HeartbeatAgent(agentID string) error
+	GetAgent(id string) (*Agent, error)
+	GetAllAgents() ([]*Agent, error)
 }
