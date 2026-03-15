@@ -1,9 +1,27 @@
 // @nexus-project: nexus
 // @nexus-path: cmd/engxd/main.go
-// Phase 12 addition:
-//   telemetry.New() creates a Metrics instance at startup.
-//   Passed to EngineConfig.Metrics and api.ServerConfig.Metrics.
-//   GET /metrics is now live at 127.0.0.1:8080/metrics.
+// ADR-002 addition:
+//   Nexus now watches the workspace root in addition to the drop folder.
+//   The workspace watcher publishes workspace event topics through the event bus
+//   so Atlas and Forge can subscribe without running independent watchers.
+//
+//   WatchTarget{Dir: workspaceRoot, Mode: WatchModeWorkspace} is added
+//   to the multi-target watcher alongside the existing drop folder target.
+//
+//   NEXUS_WORKSPACE env var controls the workspace root (default ~/workspace).
+//   NEXUS_DROP_DIR  env var controls the drop folder  (default ~/nexus-drop).
+//
+// Component startup order:
+//  1. Metrics
+//  2. State store (SQLite)
+//  3. Event bus
+//  4. Providers (Docker, Process, K8s)
+//  5. Controllers (project, health, recovery)
+//  6. Reconciler engine
+//  7. Unix socket server
+//  8. HTTP API server
+//  9. Watcher (drop folder + workspace — ADR-002)
+// 10. Result logger
 package main
 
 import (
@@ -22,6 +40,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/eventbus"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/Harshmaury/Nexus/internal/telemetry"
+	"github.com/Harshmaury/Nexus/internal/watcher"
 	"github.com/Harshmaury/Nexus/pkg/runtime"
 	dockerprovider  "github.com/Harshmaury/Nexus/pkg/runtime/docker"
 	k8sprovider     "github.com/Harshmaury/Nexus/pkg/runtime/k8s"
@@ -83,15 +102,15 @@ func run(logger *log.Logger) error {
 	logger.Printf("providers ready: %d registered", len(providers))
 
 	// ── 5. CONTROLLERS ───────────────────────────────────────────────────────
-	projectCtrl   := controllers.NewProjectController(store, bus)
-	healthCtrl    := controllers.NewHealthController(controllers.HealthControllerConfig{
+	projectCtrl  := controllers.NewProjectController(store, bus)
+	healthCtrl   := controllers.NewHealthController(controllers.HealthControllerConfig{
 		Store:     store,
 		Bus:       bus,
 		Providers: providers,
 		Interval:  config.DurationEnvOrDefault("NEXUS_HEALTH_INTERVAL", config.DefaultHealthInterval),
 		Timeout:   config.DurationEnvOrDefault("NEXUS_HEALTH_TIMEOUT", config.DefaultHealthTimeout),
 	})
-	recoveryCtrl  := controllers.NewRecoveryController(store, bus)
+	recoveryCtrl := controllers.NewRecoveryController(store, bus)
 
 	// ── 6. RECONCILER ────────────────────────────────────────────────────────
 	engine := daemon.NewEngine(daemon.EngineConfig{
@@ -121,13 +140,26 @@ func run(logger *log.Logger) error {
 		Logger:      logger,
 	})
 
+	// ── 9. WATCHER (drop folder + workspace — ADR-002) ────────────────────────
+	dropDir       := config.ExpandHome(config.EnvOrDefault("NEXUS_DROP_DIR", "~/nexus-drop"))
+	workspaceRoot := config.ExpandHome(config.EnvOrDefault("NEXUS_WORKSPACE", "~/workspace"))
+
+	w := watcher.NewMulti(
+		[]watcher.WatchTarget{
+			{Dir: dropDir,       Mode: watcher.WatchModeDropFolder},
+			{Dir: workspaceRoot, Mode: watcher.WatchModeWorkspace},
+		},
+		bus,
+		store,
+	)
+
 	// ── CONTEXT + SIGNALS ─────────────────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 6)
+	errCh := make(chan error, 7)
 
 	wg.Add(1)
 	go func() {
@@ -177,12 +209,22 @@ func run(logger *log.Logger) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		logger.Printf("watcher started — drop=%s workspace=%s", dropDir, workspaceRoot)
+		if err := w.Run(ctx); err != nil && ctx.Err() == nil {
+			errCh <- fmt.Errorf("watcher: %w", err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		logResults(ctx, logger, engine, healthCtrl, recoveryCtrl)
 	}()
 
-	logger.Printf("✓ Nexus ready — socket=%s http=%s metrics=%s/metrics providers=%d",
-		socketPath, httpAddr, httpAddr, len(providers))
+	logger.Printf("✓ Nexus ready — socket=%s http=%s metrics=%s/metrics drop=%s workspace=%s",
+		socketPath, httpAddr, httpAddr, dropDir, workspaceRoot)
 
+	// ── WAIT FOR SHUTDOWN ─────────────────────────────────────────────────────
 	select {
 	case sig := <-sigCh:
 		logger.Printf("received %s — shutting down", sig)

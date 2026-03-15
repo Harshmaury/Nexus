@@ -9,6 +9,19 @@
 //     falls in the prompt range (0.40–0.79). The CLI (engx) watches the socket
 //     for this event and presents the interactive approval prompt.
 //   - DropApprovalPayload — carries all routing details needed for the CLI prompt.
+//
+// ADR-002 addition (workspace observation):
+//   Nexus owns filesystem observation for the entire platform.
+//   The watcher publishes workspace change events through this bus so that
+//   Atlas, Forge, and any future service can subscribe without running their
+//   own watchers.
+//
+//   Topic constants are declared here — the single source of truth.
+//   ALL consumers (Atlas, Forge, diagnostics) MUST import these constants.
+//   NO consumer may redefine topic strings locally.
+//
+//   Publishers:  internal/watcher/watcher.go (workspace topics)
+//   Consumers:   Atlas (index updates), Forge Phase 3 (automation triggers)
 package eventbus
 
 import (
@@ -24,14 +37,25 @@ import (
 type Topic string
 
 const (
-	TopicServiceStarted  Topic = "service.started"
-	TopicServiceStopped  Topic = "service.stopped"
-	TopicServiceCrashed  Topic = "service.crashed"
-	TopicServiceHealed   Topic = "service.healed"
-	TopicStateChanged    Topic = "service.state_changed"
-	TopicHealthCheck     Topic = "service.health_check"
-	TopicRecoveryNeeded  Topic = "service.recovery_needed"
-	TopicSystemAlert     Topic = "system.alert"
+	// ── Service lifecycle ────────────────────────────────────────────────────
+	// Published by: daemon/engine.go, controllers/health.go
+	// Consumed by:  result logger, recovery controller
+	TopicServiceStarted Topic = "service.started"
+	TopicServiceStopped Topic = "service.stopped"
+	TopicServiceCrashed Topic = "service.crashed"
+	TopicServiceHealed  Topic = "service.healed"
+	TopicStateChanged   Topic = "service.state_changed"
+	TopicHealthCheck    Topic = "service.health_check"
+	TopicRecoveryNeeded Topic = "service.recovery_needed"
+
+	// ── System ───────────────────────────────────────────────────────────────
+	// Published by: any component
+	// Consumed by:  result logger, diagnostics
+	TopicSystemAlert Topic = "system.alert"
+
+	// ── Drop Intelligence ────────────────────────────────────────────────────
+	// Published by: watcher (file_detected), router (routed, quarantined, approval)
+	// Consumed by:  intelligence pipeline, daemon server (approval map)
 	TopicFileDropped     Topic = "drop.file_detected"
 	TopicFileRouted      Topic = "drop.file_routed"
 	TopicFileQuarantined Topic = "drop.file_quarantined"
@@ -40,7 +64,65 @@ const (
 	// file (confidence 0.40–0.79) and needs CLI confirmation.
 	// The CLI subscribes via the socket and presents an interactive prompt.
 	TopicDropPendingApproval Topic = "drop.pending_approval"
+
+	// ── Workspace (ADR-002) ──────────────────────────────────────────────────
+	// Published by: internal/watcher/watcher.go (workspace observation)
+	// Consumed by:  Atlas (index updates), Forge Phase 3 (automation triggers)
+	//
+	// RULE: import these constants — never redefine topic strings locally.
+	// All consumers must: import "github.com/Harshmaury/Nexus/internal/eventbus"
+
+	// TopicWorkspaceFileCreated is published when a new file appears in the
+	// watched workspace directories. Payload: WorkspaceFilePayload.
+	TopicWorkspaceFileCreated Topic = "workspace.file.created"
+
+	// TopicWorkspaceFileModified is published when an existing workspace file
+	// is written to. Payload: WorkspaceFilePayload.
+	TopicWorkspaceFileModified Topic = "workspace.file.modified"
+
+	// TopicWorkspaceFileDeleted is published when a workspace file is removed.
+	// Payload: WorkspaceFilePayload.
+	TopicWorkspaceFileDeleted Topic = "workspace.file.deleted"
+
+	// TopicWorkspaceUpdated is published after a batch of file events settles
+	// (debounce window). Signals a logical workspace change rather than a
+	// single file event. Payload: WorkspaceUpdatedPayload.
+	TopicWorkspaceUpdated Topic = "workspace.updated"
+
+	// TopicWorkspaceProjectDetected is published when the watcher detects a
+	// directory that looks like a new project (contains .nexus.yaml, go.mod,
+	// package.json, etc.). Payload: WorkspaceProjectPayload.
+	TopicWorkspaceProjectDetected Topic = "workspace.project.detected"
 )
+
+// ── WORKSPACE PAYLOADS (ADR-002) ─────────────────────────────────────────────
+
+// WorkspaceFilePayload is published on TopicWorkspaceFileCreated,
+// TopicWorkspaceFileModified, and TopicWorkspaceFileDeleted.
+type WorkspaceFilePayload struct {
+	Path      string    // absolute path to the file
+	Name      string    // base filename
+	Extension string    // file extension including dot, e.g. ".go"
+	SizeBytes int64     // 0 for deleted files
+	EventAt   time.Time // when the filesystem event was observed
+}
+
+// WorkspaceUpdatedPayload is published on TopicWorkspaceUpdated.
+// Summarises a settled batch of changes rather than individual file events.
+type WorkspaceUpdatedPayload struct {
+	WatchDir  string    // the root directory that changed
+	EventAt   time.Time // when the batch settled
+}
+
+// WorkspaceProjectPayload is published on TopicWorkspaceProjectDetected.
+type WorkspaceProjectPayload struct {
+	Path        string    // absolute path to the project root
+	Name        string    // directory name
+	DetectedBy  string    // which manifest triggered detection: "nexus.yaml"|"go.mod"|"package.json"|...
+	DetectedAt  time.Time
+}
+
+// ── EXISTING PAYLOADS ────────────────────────────────────────────────────────
 
 // Event carries data between components.
 type Event struct {
@@ -67,9 +149,9 @@ type Bus struct {
 	mu            sync.RWMutex
 	subscriptions map[Topic][]*subscription
 	errorHandler  func(topic Topic, handlerID string, err error)
-	wg            sync.WaitGroup // tracks in-flight PublishAsync goroutines
-	eventCounter  atomic.Uint64  // monotonic counter for event IDs
-	subCounter    atomic.Uint64  // monotonic counter for subscription IDs
+	wg            sync.WaitGroup
+	eventCounter  atomic.Uint64
+	subCounter    atomic.Uint64
 }
 
 // New creates a new Bus with a default error handler that prints to stderr.
@@ -91,11 +173,9 @@ func NewWithErrorHandler(onError func(topic Topic, handlerID string, err error))
 // ── SUBSCRIBE ────────────────────────────────────────────────────────────────
 
 // Subscribe registers a handler for a topic.
-// Returns a subscription ID that can be used to Unsubscribe later.
 func (b *Bus) Subscribe(topic Topic, handler Handler) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
 	id := b.generateSubscriptionID(topic)
 	sub := &subscription{id: id, topic: topic, handler: handler}
 	b.subscriptions[topic] = append(b.subscriptions[topic], sub)
@@ -103,7 +183,6 @@ func (b *Bus) Subscribe(topic Topic, handler Handler) string {
 }
 
 // SubscribeAll registers a handler that receives every event on every topic.
-// Useful for audit logging and debugging.
 func (b *Bus) SubscribeAll(handler Handler) string {
 	return b.Subscribe("*", handler)
 }
@@ -112,7 +191,6 @@ func (b *Bus) SubscribeAll(handler Handler) string {
 func (b *Bus) Unsubscribe(subscriptionID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
 	for topic, subs := range b.subscriptions {
 		filtered := subs[:0]
 		for _, sub := range subs {
@@ -127,9 +205,6 @@ func (b *Bus) Unsubscribe(subscriptionID string) {
 // ── PUBLISH ──────────────────────────────────────────────────────────────────
 
 // Publish sends an event synchronously to all subscribers of the topic.
-// Also delivers to wildcard ("*") subscribers.
-// Handlers are called in the caller's goroutine — a slow handler blocks the caller.
-// Use PublishAsync for events that trigger long-running handlers (e.g. recovery).
 func (b *Bus) Publish(topic Topic, serviceID string, payload any) {
 	b.mu.RLock()
 	topicSubs := copySlice(b.subscriptions[topic])
@@ -153,11 +228,6 @@ func (b *Bus) Publish(topic Topic, serviceID string, payload any) {
 }
 
 // PublishAsync sends an event in a new goroutine so the caller is never blocked.
-// Used for TopicServiceCrashed and TopicRecoveryNeeded where the recovery handler
-// involves store reads/writes and must not block the health polling loop.
-//
-// Fix 04: goroutine is tracked in b.wg so Bus.Wait() can block until all
-// async handlers complete before the store is closed on shutdown.
 func (b *Bus) PublishAsync(topic Topic, serviceID string, payload any) {
 	b.wg.Add(1)
 	go func() {
@@ -166,7 +236,7 @@ func (b *Bus) PublishAsync(topic Topic, serviceID string, payload any) {
 	}()
 }
 
-// ── TYPED PAYLOADS ───────────────────────────────────────────────────────────
+// ── EXISTING TYPED PAYLOADS ───────────────────────────────────────────────────
 
 // StateChangedPayload is published on TopicStateChanged.
 type StateChangedPayload struct {
@@ -192,7 +262,7 @@ type RecoveryPayload struct {
 
 // AlertPayload is published on TopicSystemAlert.
 type AlertPayload struct {
-	Severity string // info | warn | critical
+	Severity string
 	Message  string
 	Context  map[string]string
 }
@@ -216,24 +286,20 @@ type FileRoutedPayload struct {
 }
 
 // DropApprovalPayload is published on TopicDropPendingApproval.
-// The CLI receives this via the socket and prompts the user for confirmation.
-// Replaces the former blocking bufio.NewReader(os.Stdin) in the router.
 type DropApprovalPayload struct {
-	FilePath    string  // full path to the original file
-	ProjectID   string  // detected project
-	Destination string  // where it would be moved on approval
-	Confidence  float64 // detection confidence (0.40–0.79)
-	Method      string  // detection method used
+	FilePath    string
+	ProjectID   string
+	Destination string
+	Confidence  float64
+	Method      string
 }
 
+// ── WAIT / INTROSPECTION ──────────────────────────────────────────────────────
+
 // Wait blocks until all goroutines spawned by PublishAsync have completed.
-// Call this during shutdown before closing the state store to ensure
-// in-flight recovery handlers finish their DB writes cleanly.
 func (b *Bus) Wait() {
 	b.wg.Wait()
 }
-
-// ── INTROSPECTION ────────────────────────────────────────────────────────────
 
 // SubscriberCount returns how many handlers are registered for a topic.
 func (b *Bus) SubscriberCount(topic Topic) int {
@@ -246,7 +312,6 @@ func (b *Bus) SubscriberCount(topic Topic) int {
 func (b *Bus) Topics() []Topic {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-
 	topics := make([]Topic, 0, len(b.subscriptions))
 	for topic, subs := range b.subscriptions {
 		if len(subs) > 0 {
@@ -266,16 +331,11 @@ func (b *Bus) Reset() {
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
 func (b *Bus) nextEventID() string {
-	n := b.eventCounter.Add(1)
-	return fmt.Sprintf("evt-%d", n)
+	return fmt.Sprintf("evt-%d", b.eventCounter.Add(1))
 }
 
-// generateSubscriptionID returns a guaranteed-unique ID for a subscription.
-// Uses an atomic monotonic counter — collision-proof even under concurrent
-// Subscribe() calls on modern hardware where UnixNano() can repeat.
 func (b *Bus) generateSubscriptionID(topic Topic) string {
-	n := b.subCounter.Add(1)
-	return fmt.Sprintf("sub-%s-%d", topic, n)
+	return fmt.Sprintf("sub-%s-%d", topic, b.subCounter.Add(1))
 }
 
 func copySlice(src []*subscription) []*subscription {

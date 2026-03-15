@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 2.6.0
+# @version: 2.7.0
 # @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Nexus
 
@@ -31,7 +31,6 @@ OS: Ubuntu 24.04 (WSL2) + Windows 11
 ---
 
 ## MACHINE
-# Update only when a tool is installed or upgraded
 
 Go:1.24.1  Python:3.12.3  Node:22.22.0  .NET:10.0.103
 Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
@@ -41,73 +40,59 @@ Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
 ## BUILD STATUS
 # Last verified: 2026-03-15
 
-✅ Phase 1   Daemon core (store, bus, engine, controllers, socket, CLI)
-✅ Phase 2   Drop intelligence (4-layer detector)
-✅ Phase 3   Bug fixes (go.mod, Storer interface, notifier)
-✅ Phase 7   Internal hardening
-✅ Phase 8   REST API (127.0.0.1:8080)
-✅ Phase 9   Runtime providers (Process, K8s)
-✅ Phase 10  Drop approve/reject
-✅ Phase 11  Dependency graph (Kahn topo sort)
-✅ Phase 12  Observability (metrics + engx watch)
-✅ Phase 13  Drop Intelligence v2 (Naive Bayes, engx drop train)
-
-✅ Phase 14  Multi-machine agent mode (2026-03-15)
-  internal/state/db_agents.go        migration v4: agents table
-  internal/state/storer.go           RegisterAgent, HeartbeatAgent,
-                                     GetAgent, GetAllAgents in interface
-  internal/agent/client.go           engxa agent loop: register, sync,
-                                     heartbeat, local reconcile
-  internal/api/handler/agents.go     /agents routes: register, heartbeat,
-                                     desired, actual, list
-  internal/api/server.go             agent routes wired into HTTP server
-  cmd/engxa/main.go                  standalone agent binary
-  cmd/engx/main.go                   engx agents command
+✅ Phases 1–14   Complete — full control plane on main
+✅ ADR-002       Workspace observation implemented (2026-03-15)
+  internal/eventbus/bus.go    5 workspace topics + 3 payloads
+  internal/watcher/watcher.go WatchModeWorkspace, NewMulti(), workspace handler
+  cmd/engxd/main.go           workspace watcher wired (NEXUS_WORKSPACE env var)
 
 ---
 
-## AGENT USAGE
+## WORKSPACE EVENT TOPICS (ADR-002)
 
-On remote machine:
-  go build -o ~/bin/engxa ./cmd/engxa/
-  engxa --server http://192.168.1.10:8080 --token <secret>
+Declared in internal/eventbus/bus.go — single source of truth.
+All consumers import these constants. Never redefine locally.
 
-Central machine:
-  engx agents                        list registered agents + online status
+  TopicWorkspaceFileCreated      "workspace.file.created"
+  TopicWorkspaceFileModified     "workspace.file.modified"
+  TopicWorkspaceFileDeleted      "workspace.file.deleted"
+  TopicWorkspaceUpdated          "workspace.updated"
+  TopicWorkspaceProjectDetected  "workspace.project.detected"
 
-Assign a service to a remote agent (in svc.Config JSON):
-  {"image":"postgres:16", "agent_id":"my-server-1"}
-
-The service will be routed to agent "my-server-1" and reconciled there.
-The central store remains the source of truth for desired state.
+Consumer import:
+  import "github.com/Harshmaury/Nexus/internal/eventbus"
+  bus.Subscribe(eventbus.TopicWorkspaceFileCreated, handler)
 
 ---
 
-## ALL BINARIES
+## ENVIRONMENT VARIABLES
 
-  ~/bin/engxd   central daemon
-  ~/bin/engx    CLI client
-  ~/bin/engxa   remote agent
-  ~/bin/kubectl
-  ~/bin/minikube
+  NEXUS_DB_PATH             default ~/.nexus/nexus.db
+  NEXUS_SOCKET              default /tmp/engx.sock
+  NEXUS_HTTP_ADDR           default :8080
+  NEXUS_DROP_DIR            default ~/nexus-drop
+  NEXUS_WORKSPACE           default ~/workspace      ← new (ADR-002)
+  NEXUS_RECONCILE_INTERVAL  default 5s
+  NEXUS_HEALTH_INTERVAL     default 10s
+  NEXUS_HEALTH_TIMEOUT      default 5s
+
+---
+
+## PLATFORM STATUS
+
+Atlas Phase 1:  ready to start — event foundation now in place
+Forge Phase 1:  waits for Atlas Phase 1 to complete
 
 ---
 
 ## ROADMAP
 
-All planned phases complete. Future work as needed:
-  - API key auth (Phase 8 remainder — ~/.nexus/api_key header validation)
-  - engx drop train watch mode (auto-retrain on N new log entries)
-  - TLS for agent↔server communication
-  - Prometheus scrape target (swap JSON metrics for client_golang)
+Nexus is feature-complete for the current platform needs.
+Future Nexus work is driven by ADRs when new platform requirements emerge.
 
 ---
 
 ## CHANGELOG
 
-2026-03-11  v1.0  Created
-2026-03-14  v2.0–v2.2  Phases 9–10
-2026-03-15  v2.3  Phase 11 — dependency graph
-2026-03-15  v2.4  Phase 12 — metrics + watch
-2026-03-15  v2.5  Phase 13 — Naive Bayes classifier
-2026-03-15  v2.6  Phase 14 — multi-machine agent mode (all phases complete)
+2026-03-14  v2.0–v2.6  Phases 9–14, platform docs
+2026-03-15  v2.7  ADR-002 impl — workspace event topics + watcher extension
