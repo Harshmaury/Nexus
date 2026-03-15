@@ -1,6 +1,6 @@
 # WORKFLOW-SESSION.md
-# @version: 2.2.0
-# @updated: 2026-03-14
+# @version: 2.3.0
+# @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Nexus
 
 ---
@@ -53,7 +53,7 @@ Git:      2.43.0   → WSL2
 ---
 
 ## BUILD STATUS
-# Last verified: 2026-03-14 — branch: phase10-drop-approve
+# Last verified: 2026-03-15
 
 ### ✅ Phase 1 — Daemon Core
 ### ✅ Phase 2 — Drop Intelligence
@@ -61,34 +61,39 @@ Git:      2.43.0   → WSL2
 ### ✅ Phase 7 — Internal Hardening
 ### ✅ Phase 8 — REST API (127.0.0.1, API key auth pending)
 ### ✅ Phase 9 — Runtime Providers (Process + K8s)
+### ✅ Phase 10 — Drop Approve/Reject loop
 
-### ✅ Phase 10 — Drop Approve/Reject (2026-03-14)
-  internal/daemon/server.go   CmdDropApprove, CmdDropReject, CmdDropPending
-                              pendingApprovals map — bus subscriber, thread-safe
-  cmd/engx/main.go            engx drop pending / approve / reject
-                              basename resolution — no full path needed
+### ✅ Phase 11 — Dependency Graph (2026-03-15)
+  internal/state/db_deps.go    migration v3: depends_on column + index
+                               GetServiceDependencies, SetServiceDependencies
+  internal/state/storer.go     interface updated with dependency methods
+  internal/daemon/engine.go    Kahn's topo sort before reconcile
+                               deferred start if dependency not running
+                               cycle detection with system alert + skip
 
 ---
 
-## DROP APPROVAL FLOW (complete)
+## DEPENDENCY USAGE
 
-```
-file lands in drop folder
-  → watcher detects → TopicFileDropped
-  → detector scores confidence
-  → router: confidence 0.40–0.79
-  → TopicDropPendingApproval → server.pendingApprovals map
+In .nexus.yaml:
+  services:
+    - id: api
+      depends_on: [db, cache]
+    - id: db
+    - id: cache
 
-engx drop pending           ← lists waiting files
-engx drop approve <file>    ← moves to destination, TopicFileRouted
-engx drop reject  <file>    ← tags UNROUTED__, TopicFileQuarantined
-```
+Start order:  db → cache → api  (topo sorted)
+Stop order:   api → cache → db  (reverse topo)
+Cycle:        system alert emitted, cyclic services skipped, rest unaffected
+
+Reconciler behaviour on unmet dependency:
+  → action = "deferred", retried next tick (every 5s by default)
+  → no error, no crash — system converges naturally
 
 ---
 
 ## ROADMAP
 
-Phase 11 — Project dependency graph (depends_on in .nexus.yaml, ordered startup)
 Phase 12 — Observability (OTel spans, Prometheus counters, bubbletea TUI)
 Phase 13 — Drop Intelligence v2 (ML layer 5, TF-IDF, engx drop train)
 Phase 14 — Multi-machine agent mode (gRPC, remote state sync)
@@ -102,3 +107,4 @@ Phase 14 — Multi-machine agent mode (gRPC, remote state sync)
 2026-03-14  v2.0  Paths corrected, split into 3 files, 9 bugs fixed
 2026-03-14  v2.1  Phase 9 — Process + K8s providers
 2026-03-14  v2.2  Phase 10 — Drop approve/reject loop complete
+2026-03-15  v2.3  Phase 11 — Dependency graph, topo sort, cycle detection

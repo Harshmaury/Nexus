@@ -4,23 +4,15 @@
 // *state.Store satisfies this interface automatically (duck typing).
 // Tests supply a mock; Phase 8 HTTP handlers do the same.
 //
-// Why Storer, not Store?
-//   db.go already declares: type Store struct { ... }
-//   Go does not allow a type and interface with the same name in the
-//   same package. Idiomatic convention: -er suffix → state.Storer.
-//
-// Fix: Added LogDownload to the interface.
-//   *Store.LogDownload is implemented in db.go (line ~500) but was
-//   missing from this interface. DropLogger calls store.LogDownload —
-//   once logger.go was corrected to accept state.Storer instead of
-//   *state.Store, the build would fail at compile time without this.
+// Phase 11 addition:
+//   GetServiceDependencies — returns the depends_on list for a service
+//   SetServiceDependencies — writes the depends_on list for a service
+//   Both are used by the reconciler engine for topological sort.
 package state
 
 import "time"
 
 // Storer is the read/write contract for the Nexus state database.
-// Controllers and the reconciler depend on this interface, never on
-// the concrete *Store type directly.
 type Storer interface {
 	// ── Lifecycle ────────────────────────────────────────────
 	Close() error
@@ -60,7 +52,14 @@ type Storer interface {
 	GetAllProjects() ([]*Project, error)
 
 	// ── Download log ─────────────────────────────────────────
-	// LogDownload records a file processed by Nexus Drop.
-	// Required by DropLogger in internal/intelligence/logger.go.
 	LogDownload(d *DownloadLog) error
+
+	// ── Dependencies (Phase 11) ───────────────────────────────
+	// GetServiceDependencies returns the IDs of services that must be
+	// running before serviceID is started. Returns nil if none declared.
+	GetServiceDependencies(serviceID string) ([]string, error)
+
+	// SetServiceDependencies writes the depends_on list for a service.
+	// Called by engx register when .nexus.yaml declares depends_on.
+	SetServiceDependencies(serviceID string, deps []string) error
 }

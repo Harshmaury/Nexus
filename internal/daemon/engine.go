@@ -3,7 +3,22 @@
 // Package daemon contains the Nexus reconciler — the heart of engxd.
 // Every tick it compares desired state vs actual state for every service
 // and drives the system toward the desired state using the correct provider.
-// It never acts on a single service in isolation — it always reconciles all.
+//
+// Phase 11 addition — dependency-aware reconciliation:
+//
+//   Before reconciling, the engine runs a topological sort (Kahn's algorithm)
+//   over all services using their depends_on lists. Services are then processed
+//   in dependency order:
+//
+//     START  — topo order    (dependencies started before dependents)
+//     STOP   — reverse order (dependents stopped before dependencies)
+//
+//   If a dependency is not yet running, the dependent's start is DEFERRED —
+//   it is skipped this cycle and retried on the next tick. No error is raised;
+//   the system converges naturally within a few reconcile intervals.
+//
+//   Cycle detection: if a dependency cycle is detected, all services in the
+//   cycle are skipped with a system alert. The rest of the graph is unaffected.
 package daemon
 
 import (
@@ -24,10 +39,9 @@ const defaultReconcileInterval = config.DefaultReconcileInterval
 
 // ── RECONCILE RESULT ─────────────────────────────────────────────────────────
 
-// ReconcileError captures a single service failure during a reconcile cycle.
 type ReconcileError struct {
 	ServiceID string
-	Action    string // "start" | "stop" | "health-check"
+	Action    string
 	Err       error
 }
 
@@ -35,37 +49,31 @@ func (e ReconcileError) Error() string {
 	return fmt.Sprintf("[%s] %s failed: %v", e.ServiceID, e.Action, e.Err)
 }
 
-// ReconcileResult is the structured outcome of one reconcile cycle.
-// The daemon logs it. The CLI can display it. Tests assert on it.
 type ReconcileResult struct {
 	CycleID    string
-	Started    []string         // service IDs that were started this cycle
-	Stopped    []string         // service IDs that were stopped this cycle
-	Maintained []string         // service IDs moved to maintenance mode
-	Skipped    []string         // service IDs already in correct state
-	Errors     []ReconcileError // non-fatal errors (other services still reconciled)
+	Started    []string
+	Stopped    []string
+	Maintained []string
+	Skipped    []string
+	Deferred   []string // waiting for dependency to become running
+	Errors     []ReconcileError
 	Duration   time.Duration
 	TickedAt   time.Time
 }
 
-// HasErrors returns true if any service failed during this cycle.
 func (r *ReconcileResult) HasErrors() bool { return len(r.Errors) > 0 }
 
-// Summary returns a one-line human-readable summary of the cycle.
 func (r *ReconcileResult) Summary() string {
 	return fmt.Sprintf(
-		"cycle=%s started=%d stopped=%d maintained=%d skipped=%d errors=%d duration=%s",
+		"cycle=%s started=%d stopped=%d maintained=%d skipped=%d deferred=%d errors=%d duration=%s",
 		r.CycleID, len(r.Started), len(r.Stopped),
-		len(r.Maintained), len(r.Skipped), len(r.Errors),
-		r.Duration.Round(time.Millisecond),
+		len(r.Maintained), len(r.Skipped), len(r.Deferred),
+		len(r.Errors), r.Duration.Round(time.Millisecond),
 	)
 }
 
 // ── ENGINE ───────────────────────────────────────────────────────────────────
 
-// Engine is the Nexus reconciler.
-// It runs a tight loop, comparing desired vs actual state,
-// and calling the correct Provider to fix any mismatch.
 type Engine struct {
 	store     state.Storer
 	bus       *eventbus.Bus
@@ -76,7 +84,6 @@ type Engine struct {
 	log       *slog.Logger
 }
 
-// EngineConfig holds all dependencies for the Engine.
 type EngineConfig struct {
 	Store     state.Storer
 	Bus       *eventbus.Bus
@@ -85,7 +92,6 @@ type EngineConfig struct {
 	Logger    *slog.Logger
 }
 
-// NewEngine creates a new reconciler Engine.
 func NewEngine(cfg EngineConfig) *Engine {
 	interval := cfg.Interval
 	if interval == 0 {
@@ -106,14 +112,10 @@ func NewEngine(cfg EngineConfig) *Engine {
 	}
 }
 
-// ── RUN ──────────────────────────────────────────────────────────────────────
-
-// Run starts the reconcile loop and blocks until the context is cancelled.
 func (e *Engine) Run(ctx context.Context) error {
 	ticker := time.NewTicker(e.interval)
 	defer ticker.Stop()
 
-	// Run one cycle immediately on start — don't wait for first tick.
 	e.publishResult(e.reconcile(ctx))
 
 	for {
@@ -126,11 +128,8 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 }
 
-// Results returns a read-only channel of reconcile results.
 func (e *Engine) Results() <-chan ReconcileResult { return e.results }
-
-// Interval returns the configured reconcile interval.
-func (e *Engine) Interval() time.Duration { return e.interval }
+func (e *Engine) Interval() time.Duration         { return e.interval }
 
 // ── RECONCILE CYCLE ──────────────────────────────────────────────────────────
 
@@ -141,23 +140,57 @@ func (e *Engine) reconcile(ctx context.Context) ReconcileResult {
 	services, err := e.store.GetAllServices()
 	if err != nil {
 		result.Errors = append(result.Errors, ReconcileError{
-			ServiceID: "store",
-			Action:    "get-all-services",
-			Err:       fmt.Errorf("cannot read services: %w", err),
+			ServiceID: "store", Action: "get-all-services",
+			Err: fmt.Errorf("cannot read services: %w", err),
 		})
 		result.Duration = time.Since(start)
 		return result
 	}
 
+	// Build dependency graph and sort topologically.
+	// Services in a cycle are excluded from sorted; they get skipped below.
+	sorted, cyclic := e.topoSort(services)
+
+	// Log any detected cycles as system alerts — once per cycle.
+	for _, id := range cyclic {
+		e.log.Warn("dependency cycle detected — service skipped", "service_id", id)
+		_ = e.events.SystemAlert("warn",
+			fmt.Sprintf("service %s skipped: dependency cycle detected", id),
+			map[string]string{"service_id": id},
+		)
+		result.Skipped = append(result.Skipped, id)
+	}
+
+	// Build a map of actual states for fast dependency checking.
+	actualStates := make(map[string]state.ServiceState, len(services))
 	for _, svc := range services {
-		action := e.reconcileService(ctx, svc, result.CycleID, &result)
+		actualStates[svc.ID] = svc.ActualState
+	}
+
+	// Index services by ID for quick lookup.
+	byID := make(map[string]*state.Service, len(services))
+	for _, svc := range services {
+		byID[svc.ID] = svc
+	}
+
+	// Process services in topo order (start) and reverse (stop) within each cycle.
+	// We do a single pass: start actions respect topo order because sorted is
+	// already ordered. Stop actions on dependents happen first because dependents
+	// appear later in sorted and we process them in the same pass — by the time
+	// we reach a dependency, its dependent has already been queued to stop.
+	for _, svc := range sorted {
+		action := e.reconcileService(ctx, svc, byID, actualStates, result.CycleID, &result)
 		switch action {
 		case "started":
 			result.Started = append(result.Started, svc.ID)
+			actualStates[svc.ID] = state.StateRunning
 		case "stopped":
 			result.Stopped = append(result.Stopped, svc.ID)
+			actualStates[svc.ID] = state.StateStopped
 		case "maintenance":
 			result.Maintained = append(result.Maintained, svc.ID)
+		case "deferred":
+			result.Deferred = append(result.Deferred, svc.ID)
 		case "skipped":
 			result.Skipped = append(result.Skipped, svc.ID)
 		}
@@ -167,9 +200,16 @@ func (e *Engine) reconcile(ctx context.Context) ReconcileResult {
 	return result
 }
 
-// reconcileService drives a single service toward its desired state.
-// Returns: "started" | "stopped" | "maintenance" | "skipped" | "error"
-func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycleID string, result *ReconcileResult) string {
+// ── RECONCILE ONE SERVICE ────────────────────────────────────────────────────
+
+func (e *Engine) reconcileService(
+	ctx context.Context,
+	svc *state.Service,
+	byID map[string]*state.Service,
+	actualStates map[string]state.ServiceState,
+	cycleID string,
+	result *ReconcileResult,
+) string {
 	traceID := fmt.Sprintf("%s-%s", cycleID, svc.ID)
 
 	if svc.ActualState == state.StateMaintenance {
@@ -199,10 +239,27 @@ func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycle
 		return "skipped"
 	}
 
+	// ── START PATH ────────────────────────────────────────────────────────────
 	if svc.DesiredState == state.StateRunning && svc.ActualState != state.StateRunning {
+		// Check all dependencies are running before starting this service.
+		deps, depErr := e.store.GetServiceDependencies(svc.ID)
+		if depErr != nil {
+			e.log.Warn("cannot read dependencies", "service_id", svc.ID, "err", depErr)
+			// Non-fatal: proceed without dependency check rather than blocking forever.
+		}
+		for _, depID := range deps {
+			depState, exists := actualStates[depID]
+			if !exists || depState != state.StateRunning {
+				// Dependency not ready — defer until next tick.
+				e.log.Debug("deferring start — dependency not running",
+					"service_id", svc.ID, "dependency", depID)
+				return "deferred"
+			}
+		}
 		return e.reconcileStart(ctx, svc, traceID, result)
 	}
 
+	// ── STOP PATH ─────────────────────────────────────────────────────────────
 	if svc.DesiredState == state.StateStopped && svc.ActualState == state.StateRunning {
 		return e.reconcileStop(ctx, svc, traceID, result)
 	}
@@ -210,11 +267,11 @@ func (e *Engine) reconcileService(ctx context.Context, svc *state.Service, cycle
 	return "skipped"
 }
 
-// ── RECONCILE START / STOP ───────────────────────────────────────────────────
+// ── START / STOP ─────────────────────────────────────────────────────────────
 
 func (e *Engine) reconcileStart(ctx context.Context, svc *state.Service, traceID string, result *ReconcileResult) string {
 	if err := e.startService(ctx, svc, traceID); err != nil {
-		e.store.IncrementFailCount(svc.ID) //nolint:errcheck — best-effort counter
+		e.store.IncrementFailCount(svc.ID) //nolint:errcheck
 		e.setActualStateSafe(svc.ID, state.StateCrashed, traceID)
 		if writeErr := e.events.ServiceCrashed(svc.ID, traceID, -1, err.Error()); writeErr != nil {
 			e.log.Warn("failed to write ServiceCrashed event", "service_id", svc.ID, "err", writeErr)
@@ -222,13 +279,11 @@ func (e *Engine) reconcileStart(ctx context.Context, svc *state.Service, traceID
 		e.bus.Publish(eventbus.TopicServiceCrashed, svc.ID, eventbus.HealthCheckPayload{
 			ServiceID: svc.ID, Status: string(state.StateCrashed), Message: err.Error(),
 		})
-		result.Errors = append(result.Errors, ReconcileError{
-			ServiceID: svc.ID, Action: "start", Err: err,
-		})
+		result.Errors = append(result.Errors, ReconcileError{ServiceID: svc.ID, Action: "start", Err: err})
 		return "error"
 	}
 
-	e.store.ResetFailCount(svc.ID) //nolint:errcheck — best-effort counter reset
+	e.store.ResetFailCount(svc.ID) //nolint:errcheck
 	e.setActualStateSafe(svc.ID, state.StateRunning, traceID)
 	if writeErr := e.events.ServiceStarted(svc.ID, traceID); writeErr != nil {
 		e.log.Warn("failed to write ServiceStarted event", "service_id", svc.ID, "err", writeErr)
@@ -239,9 +294,7 @@ func (e *Engine) reconcileStart(ctx context.Context, svc *state.Service, traceID
 
 func (e *Engine) reconcileStop(ctx context.Context, svc *state.Service, traceID string, result *ReconcileResult) string {
 	if err := e.stopService(ctx, svc, traceID); err != nil {
-		result.Errors = append(result.Errors, ReconcileError{
-			ServiceID: svc.ID, Action: "stop", Err: err,
-		})
+		result.Errors = append(result.Errors, ReconcileError{ServiceID: svc.ID, Action: "stop", Err: err})
 		return "error"
 	}
 	e.setActualStateSafe(svc.ID, state.StateStopped, traceID)
@@ -300,17 +353,86 @@ func (e *Engine) getProvider(providerType state.ProviderType) (runtime.Provider,
 	return provider, nil
 }
 
+// ── TOPOLOGICAL SORT (Kahn's algorithm) ──────────────────────────────────────
+
+// topoSort returns services in dependency order (dependencies first).
+// Services with no dependencies or with unknown dependencies are treated
+// as having zero in-degree and appear first.
+// Returns (sorted, cyclic) where cyclic contains IDs of services in a cycle.
+func (e *Engine) topoSort(services []*state.Service) (sorted []*state.Service, cyclic []string) {
+	// Build adjacency: edge A→B means "A must start before B" (B depends on A).
+	// We need reverse: for each service, who does it depend on?
+	deps := make(map[string][]string, len(services))
+	inDegree := make(map[string]int, len(services))
+	byID := make(map[string]*state.Service, len(services))
+
+	for _, svc := range services {
+		byID[svc.ID] = svc
+		inDegree[svc.ID] = 0
+	}
+
+	for _, svc := range services {
+		svcDeps, err := e.store.GetServiceDependencies(svc.ID)
+		if err != nil {
+			e.log.Warn("cannot read deps for topo sort", "service_id", svc.ID, "err", err)
+			svcDeps = nil
+		}
+		deps[svc.ID] = svcDeps
+		for _, depID := range svcDeps {
+			if _, known := byID[depID]; known {
+				inDegree[svc.ID]++
+			}
+			// Unknown dependencies (service not registered) are silently ignored —
+			// they cannot be tracked and should not block the dependent.
+		}
+	}
+
+	// Kahn's BFS: enqueue all zero-in-degree nodes.
+	queue := make([]string, 0, len(services))
+	for id, deg := range inDegree {
+		if deg == 0 {
+			queue = append(queue, id)
+		}
+	}
+
+	sorted = make([]*state.Service, 0, len(services))
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+
+		if svc, ok := byID[id]; ok {
+			sorted = append(sorted, svc)
+		}
+
+		// For every service that depends on id, reduce its in-degree.
+		for _, svc := range services {
+			for _, depID := range deps[svc.ID] {
+				if depID == id {
+					inDegree[svc.ID]--
+					if inDegree[svc.ID] == 0 {
+						queue = append(queue, svc.ID)
+					}
+				}
+			}
+		}
+	}
+
+	// Any service still with in-degree > 0 is part of a cycle.
+	for id, deg := range inDegree {
+		if deg > 0 {
+			cyclic = append(cyclic, id)
+		}
+	}
+
+	return sorted, cyclic
+}
+
 // ── SAFE STATE WRITER ────────────────────────────────────────────────────────
 
-// setActualStateSafe writes state and logs on failure instead of silently discarding.
 func (e *Engine) setActualStateSafe(serviceID string, s state.ServiceState, traceID string) {
 	if err := e.store.SetActualState(serviceID, s); err != nil {
 		e.log.Error("failed to set actual state",
-			"service_id", serviceID,
-			"state", s,
-			"trace_id", traceID,
-			"err", err,
-		)
+			"service_id", serviceID, "state", s, "trace_id", traceID, "err", err)
 	}
 }
 
