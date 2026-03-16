@@ -1,162 +1,91 @@
 # WORKFLOW-SESSION.md
-# @version: 2.20.0
+# @version: 3.1.0
 # @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Nexus
 
 ---
 
-## HOW TO START A SESSION
+## Start a Session
 
 ```bash
 cd ~/workspace/projects/apps/nexus && ./scripts/verify.sh
 ```
 
-Paste the output block into Claude. Confirm + ask for task.
+Paste output into Claude. Session key format: `NX-<hash>-<YYYYMMDD>`
 
 ---
 
-## SESSION KEY
+## Identity
 
-Format: NX-<git-short-hash>-<YYYYMMDD>
-Claude: fetch this file → match hash → confirm → ask for task.
-
----
-
-## IDENTITY
-
-Developer: Harsh Maury  |  GitHub: https://github.com/Harshmaury
-Nexus: https://github.com/Harshmaury/Nexus
-OS: Ubuntu 24.04 (WSL2) + Windows 11
+Developer: Harsh Maury | OS: Ubuntu 24.04 (WSL2) + Windows 11
+Go: 1.24.1 | Drop folder: /mnt/c/Users/harsh/Downloads/engx-drop/
 
 ---
 
-## MACHINE
+## Platform
 
-Go:1.24.1  Python:3.12.3  Node:22.22.0  .NET:10.0.103
-Docker:28.2.2  kubectl:v1.35.1  Minikube:v1.38.1  Git:2.43.0
+```
+Control    Nexus  :8080  ← this
+Knowledge  Atlas  :8081
+Execution  Forge  :8082
+```
 
 ---
 
-## BUILD STATUS
+## Build Status
 # Last verified: 2026-03-16
 
-✅ Phases 1–14   Complete — full control plane on main
-✅ ADR-002       Workspace observation implemented (2026-03-15)
-  internal/eventbus/bus.go    5 workspace topics + 3 payloads
-  internal/watcher/watcher.go WatchModeWorkspace, NewMulti(), workspace handler
-  cmd/engxd/main.go           workspace watcher wired (NEXUS_WORKSPACE env var)
-
-✅ NX-Fix-01     Debounce map data race eliminated (2026-03-16)
-✅ NX-Fix-02     moveFile/copyFile extracted to pkg/osutil (2026-03-16)
-✅ NX-Fix-03     Classifier goroutine-safe via sync.RWMutex (2026-03-16)
-✅ NX-Fix-04     Classifier wired into engxd daemon (2026-03-16)
-✅ NX-Fix-05     Token comparison timing-safe (2026-03-16)
-✅ NX-Fix-06     All migrations consolidated in db.go (2026-03-16)
-  internal/state/db.go        v3 + v4 added inline to allMigrations
-  internal/state/db_deps.go   init() removed, store methods kept
-  internal/state/db_agents.go init() removed, model + methods kept
-
-## NEXUS CRITICALS — ALL COMPLETE ✅
-
-## NEXUS HIGHS
-
-✅ NX-H-01  publishResult context-aware (2026-03-16)
-✅ NX-H-02  validateToken uses GetAgentToken — minimal query (2026-03-16)
-✅ NX-H-03  classifier save/load paths unified via modelDir (2026-03-16)
-  NX-H-04  already resolved by NX-Fix-01 (separator-aware modeForPath)
-✅ NX-H-05  topoSort O(n+e) reverse adjacency list (2026-03-16)
-✅ NX-H-06  agent re-registration failure-driven (2026-03-16)
-  internal/agent/client.go  heartbeatFails counter, threshold=3
-
-## NEXUS HIGHS — ALL COMPLETE ✅
-
-## ADR-008 IMPLEMENTATION
-
-✅ internal/config/service_tokens.go    LoadServiceTokens()
-✅ internal/api/middleware/service_auth.go ServiceAuth middleware
-✅ internal/api/server.go                ServiceTokens field wired
-✅ cmd/engxd/main.go                     tokens loaded at step 1
-  internal/daemon/engine.go  dependents[] map, O(e) dequeue walk
-  internal/intelligence/classifier.go  saveModel + load use c.modelDir
-  internal/state/storer.go            GetAgentToken added to interface
-  internal/state/db_agents.go         GetAgentToken impl (SELECT token only)
-  internal/api/handler/agents.go      validateToken uses GetAgentToken
-  internal/daemon/engine.go  ctx param added, shutdown-safe drop
-  internal/api/handler/agents.go  subtle.ConstantTimeCompare replaces != 
-  cmd/engxd/main.go  intelligence.NewClassifier() at step 7
-                     Classifier field set in daemon.ServerConfig
-                     engx drop train now functional
-  internal/intelligence/classifier.go  RWMutex guards model pointer
-                                        Train: build outside lock, atomic swap
-                                        Classify/ModelInfo: RLock + snapshot
-  pkg/osutil/file.go                single MoveFile impl, io.CopyBuffer
-  internal/intelligence/router.go   local funcs removed, uses osutil
-  internal/daemon/server.go         local func removed, uses osutil
-  internal/watcher/watcher.go debounceMap struct with sync.Mutex
-                               AfterFunc callbacks serialised via Delete()
-                               Verified clean with go build ./...
+✅ Phases 1–14            Complete — full control plane
+✅ ADR-002                Workspace observation (5 topics)
+✅ ADR-008                Inter-service auth (ServiceAuth middleware)
+✅ v1.0.0-fixes-complete  All criticals + highs resolved
 
 ---
 
-## WORKSPACE EVENT TOPICS (ADR-002)
+## Environment Variables
 
-Declared in internal/eventbus/bus.go — single source of truth.
-All consumers import these constants. Never redefine locally.
-
-  TopicWorkspaceFileCreated      "workspace.file.created"
-  TopicWorkspaceFileModified     "workspace.file.modified"
-  TopicWorkspaceFileDeleted      "workspace.file.deleted"
-  TopicWorkspaceUpdated          "workspace.updated"
-  TopicWorkspaceProjectDetected  "workspace.project.detected"
-
-Consumer import:
-  import "github.com/Harshmaury/Nexus/internal/eventbus"
-  bus.Subscribe(eventbus.TopicWorkspaceFileCreated, handler)
+```
+NEXUS_DB_PATH             ~/.nexus/nexus.db
+NEXUS_SOCKET              /tmp/engx.sock
+NEXUS_HTTP_ADDR           :8080
+NEXUS_DROP_DIR            ~/nexus-drop
+NEXUS_WORKSPACE           ~/workspace
+NEXUS_RECONCILE_INTERVAL  5s
+NEXUS_HEALTH_INTERVAL     10s
+NEXUS_HEALTH_TIMEOUT      5s
+```
 
 ---
 
-## ENVIRONMENT VARIABLES
+## Key Files
 
-  NEXUS_DB_PATH             default ~/.nexus/nexus.db
-  NEXUS_SOCKET              default /tmp/engx.sock
-  NEXUS_HTTP_ADDR           default :8080
-  NEXUS_DROP_DIR            default ~/nexus-drop
-  NEXUS_WORKSPACE           default ~/workspace      ← new (ADR-002)
-  NEXUS_RECONCILE_INTERVAL  default 5s
-  NEXUS_HEALTH_INTERVAL     default 10s
-  NEXUS_HEALTH_TIMEOUT      default 5s
-
----
-
-## PLATFORM STATUS
-
-Atlas Phase 1:  ready to start — event foundation now in place
-Forge Phase 1:  waits for Atlas Phase 1 to complete
+```
+internal/config/service_tokens.go      LoadServiceTokens — reads ~/.nexus/service-tokens
+internal/api/middleware/service_auth.go ServiceAuth middleware (ADR-008)
+internal/state/db.go                   allMigrations — single source (v1–v4)
+internal/daemon/engine.go              publishResult (context-aware), topoSort (O(n+e))
+internal/intelligence/classifier.go    Classifier (RWMutex, modelDir-based paths)
+internal/agent/client.go               re-registers on heartbeat failure only
+pkg/events/topics.go                   public topic constants for Atlas + Forge
+```
 
 ---
 
-## ROADMAP
+## Roadmap
 
-Nexus is feature-complete for the current platform needs.
-Future Nexus work is driven by ADRs when new platform requirements emerge.
+Feature-complete. Future work is ADR-driven.
+Next open item: Nexus `GET /events` `?since=` parameter (X1 gap).
 
 ---
 
-## CHANGELOG
+## Commands
 
-2026-03-14  v2.0–v2.6  Phases 9–14, platform docs
-2026-03-15  v2.8  fix: engine_test.go — deterministic partial failure test
-2026-03-15  v2.7  ADR-002 impl — workspace event topics + watcher extension
-2026-03-16  v2.9  fix: NX-Fix-01 — debounce map data race in watcher.go
-2026-03-16  v2.10 fix: NX-Fix-02 — moveFile extracted to pkg/osutil, removed duplication
-2026-03-16  v2.11 fix: NX-Fix-03 — Classifier goroutine safety (sync.RWMutex)
-2026-03-16  v2.12 fix: NX-Fix-04 — Classifier wired into engxd, drop train now works
-2026-03-16  v2.13 fix: NX-Fix-05 — token timing-attack via subtle.ConstantTimeCompare
-2026-03-16  v2.14 fix: NX-Fix-06 — migrations consolidated in db.go, init() removed
-2026-03-16  v2.15 fix: NX-H-01  — publishResult context-aware, no indefinite block
-2026-03-16  v2.16 fix: NX-H-02  — validateToken uses GetAgentToken (SELECT token only)
-2026-03-16  v2.17 fix: NX-H-03  — classifier paths unified via modelDir
-2026-03-16  v2.18 fix: NX-H-05  — topoSort O(n+e) reverse adjacency list
-2026-03-16  v2.19 fix: NX-H-06  — agent re-registers on heartbeat failure, not timer
-2026-03-16  v2.20 feat: ADR-008 — inter-service auth, ServiceAuth middleware
-                      (NX-H-04 already resolved by NX-Fix-01 separator check)
+All commands in `~/workspace/developer-platform/RUNBOOK.md`.
+
+---
+
+## Changelog
+
+2026-03-16  v3.1.0  session doc simplified — commands moved to RUNBOOK.md
+2026-03-16  v3.0.0  All criticals + highs fixed, ADR-008 implemented
+2026-03-15  v2.8.0  ADR-002 workspace observation
