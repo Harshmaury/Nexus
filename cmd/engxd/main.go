@@ -43,6 +43,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
+	"github.com/Harshmaury/Nexus/internal/sse"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/Harshmaury/Nexus/internal/telemetry"
 	"github.com/Harshmaury/Nexus/internal/watcher"
@@ -147,6 +148,9 @@ func run(logger *log.Logger) error {
 
 	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	httpAddr := config.EnvOrDefault("NEXUS_HTTP_ADDR", config.DefaultHTTPAddr)
+	sseBroker := sse.NewBroker()
+
+	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	apiServer := api.NewServer(api.ServerConfig{
 		Addr:          httpAddr,
 		Store:         store,
@@ -154,6 +158,7 @@ func run(logger *log.Logger) error {
 		Metrics:       metrics,
 		Logger:        logger,
 		ServiceTokens: serviceTokens, // ADR-008
+		SSEBroker:     sseBroker,     // Phase 16: ADR-015
 	})
 
 	// ── 9. WATCHER (drop folder + workspace — ADR-002) ────────────────────────

@@ -20,6 +20,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/api/middleware"
 	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/controllers"
+	"github.com/Harshmaury/Nexus/internal/sse"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/Harshmaury/Nexus/internal/telemetry"
 )
@@ -35,7 +36,8 @@ type ServerConfig struct {
 	ProjectCtrl   *controllers.ProjectController
 	Metrics       *telemetry.Metrics
 	Logger        *log.Logger
-	ServiceTokens map[string]string // ADR-008: atlas+forge tokens; empty = unauthenticated mode
+	ServiceTokens map[string]string
+	SSEBroker     *sse.Broker // Phase 16: nil = SSE disabled (ADR-015)
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -99,6 +101,12 @@ func newRouter(cfg ServerConfig) http.Handler {
 	mux.HandleFunc("POST /projects/register",    projectsH.Register)
 	mux.HandleFunc("GET  /services",             servicesH.List)
 	mux.HandleFunc("GET  /events",               eventsH.List)
+
+	// ── Phase 16: SSE streaming (ADR-015) ────────────────────────────────────
+	if cfg.SSEBroker != nil {
+		streamH := handler.NewStreamHandler(cfg.SSEBroker)
+		mux.HandleFunc("GET  /events/stream", streamH.Stream)
+	}
 
 	// ── Agent routes (Phase 14) ───────────────────────────────────────────────
 	mux.HandleFunc("GET  /agents",                  agentsH.List)

@@ -39,18 +39,33 @@ const (
 
 // ── EVENT WRITER ─────────────────────────────────────────────────────────────
 
+// SSEPublisher is the interface EventWriter uses to publish to the SSE broker.
+// Defined here to avoid an import cycle between state and sse packages.
+type SSEPublisher interface {
+	PublishRaw(eventType, serviceID, source, component, outcome, traceID, payload string)
+}
+
 // EventWriter wraps Store and provides typed event-writing methods.
 // Every component that emits events holds an EventWriter, not a raw Store.
 // This ensures source, component, and trace IDs are always set correctly.
+// Phase 16: optional broker publishes events to SSE subscribers (ADR-015).
 type EventWriter struct {
 	store     Storer
 	source    EventSource
 	component string
+	broker    SSEPublisher // nil = SSE disabled
 }
 
 // NewEventWriter creates an EventWriter bound to a specific source component.
 func NewEventWriter(store Storer, source EventSource, component string) *EventWriter {
 	return &EventWriter{store: store, source: source, component: component}
+}
+
+// WithBroker attaches an SSE broker to this EventWriter.
+// Called at daemon startup after the broker is initialised (Phase 16).
+func (w *EventWriter) WithBroker(b SSEPublisher) *EventWriter {
+	w.broker = b
+	return w
 }
 
 // ── TYPED WRITE METHODS ──────────────────────────────────────────────────────
@@ -137,12 +152,20 @@ func (w *EventWriter) FileRouted(traceID string, originalName string, renamedTo 
 // ── INTERNAL ─────────────────────────────────────────────────────────────────
 
 // write serialises the payload to JSON and delegates to the store.
+// Phase 16: also publishes to the SSE broker if one is attached (ADR-015).
 func (w *EventWriter) write(serviceID string, eventType EventType, traceID string, outcome string, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal event payload: %w", err)
 	}
-	return w.store.AppendEvent(serviceID, eventType, w.source, traceID, w.component, outcome, string(data))
+	if err := w.store.AppendEvent(serviceID, eventType, w.source, traceID, w.component, outcome, string(data)); err != nil {
+		return err
+	}
+	// Notify SSE broker — best effort, never fails the write.
+	if w.broker != nil {
+		w.broker.PublishRaw(string(eventType), serviceID, string(w.source), w.component, outcome, traceID, string(data))
+	}
+	return nil
 }
 
 // newTraceID generates a trace ID for events that start a new operation chain.
