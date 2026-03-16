@@ -1,5 +1,8 @@
 // @nexus-project: nexus
 // @nexus-path: internal/api/server.go
+// ADR-008: ServiceAuth middleware wired — validates X-Service-Token on all
+// routes except /health. If ServiceTokens is empty, auth is skipped (local dev).
+//
 // Phase 14 addition:
 //   All /agents routes registered.
 //   AgentsHandler injected via ServerConfig.Store (no new config field needed).
@@ -27,11 +30,12 @@ type Server struct {
 }
 
 type ServerConfig struct {
-	Addr        string
-	Store       state.Storer
-	ProjectCtrl *controllers.ProjectController
-	Metrics     *telemetry.Metrics
-	Logger      *log.Logger
+	Addr          string
+	Store         state.Storer
+	ProjectCtrl   *controllers.ProjectController
+	Metrics       *telemetry.Metrics
+	Logger        *log.Logger
+	ServiceTokens map[string]string // ADR-008: atlas+forge tokens; empty = unauthenticated mode
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -104,6 +108,7 @@ func newRouter(cfg ServerConfig) http.Handler {
 	mux.HandleFunc("POST /agents/{id}/actual",      agentsH.Actual)
 
 	var h http.Handler = mux
+	h = middleware.ServiceAuth(cfg.ServiceTokens, cfg.Logger)(h) // ADR-008
 	h = middleware.Recovery(h, cfg.Logger)
 	h = middleware.Logging(h, cfg.Logger)
 	return h
