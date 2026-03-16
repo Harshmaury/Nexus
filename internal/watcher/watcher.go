@@ -157,7 +157,7 @@ func New(watchDir string, bus *eventbus.Bus, store state.Storer) *Watcher {
 	return &Watcher{
 		targets: []WatchTarget{{Dir: watchDir, Mode: WatchModeDropFolder}},
 		bus:     bus,
-		events:  state.NewEventWriter(store, state.SourceDropSystem),
+		events:  state.NewEventWriter(store, state.SourceDropSystem, state.ComponentDrop),
 	}
 }
 
@@ -167,7 +167,7 @@ func NewMulti(targets []WatchTarget, bus *eventbus.Bus, store state.Storer) *Wat
 	return &Watcher{
 		targets: targets,
 		bus:     bus,
-		events:  state.NewEventWriter(store, state.SourceDropSystem),
+		events:  state.NewEventWriter(store, state.SourceDropSystem, state.ComponentDrop),
 	}
 }
 

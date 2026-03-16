@@ -105,12 +105,18 @@ type Service struct {
 }
 
 // Event is an immutable log of everything that happened.
+//
+// Phase 15 additions:
+//   Component — platform domain that emitted the event (nexus|atlas|forge|drop|system).
+//   Outcome   — result of the action (success|failure|deferred|"").
 type Event struct {
 	ID        int64
 	ServiceID string
 	Type      EventType
 	Source    EventSource
 	TraceID   string
+	Component string
+	Outcome   string
 	Payload   string
 	CreatedAt time.Time
 }
@@ -352,11 +358,13 @@ func (s *Store) GetServicesReadyToRestart() ([]*Service, error) {
 
 // ── EVENT OPERATIONS ─────────────────────────────────────────────────────────
 
-// AppendEvent writes an immutable event with source and optional trace ID.
-func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventSource, traceID string, payload string) error {
+// AppendEvent writes an immutable event with source, trace ID, component, and outcome.
+// Phase 15: component identifies the platform domain (nexus|atlas|forge|drop|system).
+// outcome records the action result (success|failure|deferred|"" for informational events).
+func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventSource, traceID string, component string, outcome string, payload string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO events (service_id, type, source, trace_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		serviceID, eventType, source, traceID, payload, time.Now().UTC(),
+		`INSERT INTO events (service_id, type, source, trace_id, component, outcome, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		serviceID, eventType, source, traceID, component, outcome, payload, time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("append event %s for %s: %w", eventType, serviceID, err)
@@ -367,7 +375,7 @@ func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventS
 // GetRecentEvents returns the N most recent events.
 func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id, service_id, type, source, trace_id, payload, created_at
+		`SELECT id, service_id, type, source, trace_id, component, outcome, payload, created_at
 		 FROM events ORDER BY created_at DESC LIMIT ?`,
 		limit,
 	)
@@ -379,7 +387,7 @@ func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	var events []*Event
 	for rows.Next() {
 		e := &Event{}
-		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.Component, &e.Outcome, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		events = append(events, e)
@@ -390,7 +398,7 @@ func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 // GetEventsByTrace returns all events sharing a trace ID.
 func (s *Store) GetEventsByTrace(traceID string) ([]*Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id, service_id, type, source, trace_id, payload, created_at
+		`SELECT id, service_id, type, source, trace_id, component, outcome, payload, created_at
 		 FROM events WHERE trace_id = ? ORDER BY created_at ASC`,
 		traceID,
 	)
@@ -402,7 +410,32 @@ func (s *Store) GetEventsByTrace(traceID string) ([]*Event, error) {
 	var events []*Event
 	for rows.Next() {
 		e := &Event{}
-		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.Component, &e.Outcome, &e.Payload, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// GetEventsSince returns events with ID greater than sinceID, up to limit.
+// Phase 15: used by Atlas subscriber for efficient incremental polling.
+// Returns events in ascending ID order so the subscriber can track lastID.
+func (s *Store) GetEventsSince(sinceID int64, limit int) ([]*Event, error) {
+	rows, err := s.db.Query(
+		`SELECT id, service_id, type, source, trace_id, component, outcome, payload, created_at
+		 FROM events WHERE id > ? ORDER BY id ASC LIMIT ?`,
+		sinceID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query events since %d: %w", sinceID, err)
+	}
+	defer rows.Close()
+
+	var events []*Event
+	for rows.Next() {
+		e := &Event{}
+		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.Component, &e.Outcome, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		events = append(events, e)
@@ -656,6 +689,16 @@ var allMigrations = []schemaVersion{
 		registered_at DATETIME NOT NULL
 	)`},
 	{4, `CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen)`},
+
+	// ── v5: enrich events table for Phase 15 observation layer ───────────────
+	// Adds component (platform domain) and outcome (action result) columns.
+	// These fields power GET /events as an observation surface for future
+	// observer services (Metrics, Navigator) without a separate event bus.
+	// Existing rows default to '' for both columns — backward compatible.
+	{5, `ALTER TABLE events ADD COLUMN component TEXT NOT NULL DEFAULT ''`},
+	{5, `ALTER TABLE events ADD COLUMN outcome   TEXT NOT NULL DEFAULT ''`},
+	{5, `CREATE INDEX IF NOT EXISTS idx_events_component ON events(component)`},
+	{5, `CREATE INDEX IF NOT EXISTS idx_events_outcome   ON events(outcome)`},
 }
 
 func (s *Store) migrate() error {

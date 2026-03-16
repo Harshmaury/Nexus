@@ -6,7 +6,7 @@
 // It registers itself with the central engxd, receives desired state
 // for its services, and reports actual state back via heartbeats.
 //
-// Schema (migration v4):
+// Schema (migration v4 — declared in db.go allMigrations):
 //   agents table — one row per registered agent
 //   id          TEXT PK  — stable machine identifier (hostname or user-set)
 //   hostname    TEXT     — OS hostname of the agent machine
@@ -18,6 +18,10 @@
 // Agent status is derived, not stored:
 //   online  — last_seen within agentOnlineThreshold (30s)
 //   offline — last_seen older than threshold
+//
+// NX-Fix-06 / Phase 15: init() registration removed.
+// Migration v4 is now declared inline in db.go allMigrations slice.
+// This file contains only the Agent model and store methods.
 package state
 
 import (
@@ -29,22 +33,6 @@ import (
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 
 const agentOnlineThreshold = 30 * time.Second
-
-// ── MIGRATION V4 ─────────────────────────────────────────────────────────────
-
-func init() {
-	allMigrations = append(allMigrations,
-		schemaVersion{4, `CREATE TABLE IF NOT EXISTS agents (
-			id            TEXT PRIMARY KEY,
-			hostname      TEXT NOT NULL DEFAULT '',
-			address       TEXT NOT NULL DEFAULT '',
-			token         TEXT NOT NULL DEFAULT '',
-			last_seen     DATETIME,
-			registered_at DATETIME NOT NULL
-		)`},
-		schemaVersion{4, `CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen)`},
-	)
-}
 
 // ── MODEL ─────────────────────────────────────────────────────────────────────
 
@@ -82,7 +70,6 @@ func (s *Store) RegisterAgent(a *Agent) error {
 }
 
 // HeartbeatAgent updates last_seen for an agent.
-// Called on every heartbeat from engxa.
 func (s *Store) HeartbeatAgent(agentID string) error {
 	_, err := s.db.Exec(
 		`UPDATE agents SET last_seen = ? WHERE id = ?`,
@@ -105,8 +92,7 @@ func (s *Store) GetAgent(id string) (*Agent, error) {
 
 // GetAgentToken returns the stored token for an agent.
 // Returns ("", false, nil) when the agent is not registered.
-// Used by validateToken — fetches only the token column, never the full record.
-// NX-H-02: replaces GetAgent in the hot auth path to minimise data exposure.
+// NX-H-02: fetches only the token column to minimise data exposure.
 func (s *Store) GetAgentToken(id string) (string, bool, error) {
 	var token string
 	err := s.db.QueryRow(`SELECT token FROM agents WHERE id = ?`, id).Scan(&token)

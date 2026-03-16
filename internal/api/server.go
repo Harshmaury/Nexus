@@ -109,6 +109,7 @@ func newRouter(cfg ServerConfig) http.Handler {
 
 	var h http.Handler = mux
 	h = middleware.ServiceAuth(cfg.ServiceTokens, cfg.Logger)(h) // ADR-008
+	h = middleware.TraceID(h)                                     // Phase 15: X-Trace-ID propagation
 	h = middleware.Recovery(h, cfg.Logger)
 	h = middleware.Logging(h, cfg.Logger)
 	return h

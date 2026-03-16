@@ -94,7 +94,7 @@ func NewHealthController(cfg HealthControllerConfig) *HealthController {
 	return &HealthController{
 		store:     cfg.Store,
 		bus:       cfg.Bus,
-		events:    state.NewEventWriter(cfg.Store, state.SourceHealthPlugin),
+		events:    state.NewEventWriter(cfg.Store, state.SourceHealthPlugin, state.ComponentNexus),
 		providers: cfg.Providers,
 		interval:  interval,
 		timeout:   timeout,

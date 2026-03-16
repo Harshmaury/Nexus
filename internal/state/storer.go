@@ -33,9 +33,12 @@ type Storer interface {
 	GetServicesReadyToRestart() ([]*Service, error)
 
 	// ── Events ───────────────────────────────────────────────
-	AppendEvent(serviceID string, eventType EventType, source EventSource, traceID string, payload string) error
+	// Phase 15: AppendEvent accepts component (platform domain) and outcome.
+	AppendEvent(serviceID string, eventType EventType, source EventSource, traceID string, component string, outcome string, payload string) error
 	GetRecentEvents(limit int) ([]*Event, error)
 	GetEventsByTrace(traceID string) ([]*Event, error)
+	// GetEventsSince returns events with ID > sinceID for efficient polling.
+	GetEventsSince(sinceID int64, limit int) ([]*Event, error)
 
 	// ── Health ───────────────────────────────────────────────
 	LogHealth(serviceID string, status ServiceState, exitCode int, message string) error

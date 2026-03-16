@@ -71,7 +71,7 @@ func NewRecoveryController(store state.Storer, bus *eventbus.Bus) *RecoveryContr
 	rc := &RecoveryController{
 		store:     store,
 		bus:       bus,
-		events:    state.NewEventWriter(store, state.SourceRecovery),
+		events:    state.NewEventWriter(store, state.SourceRecovery, state.ComponentNexus),
 		decisions: make(chan RecoveryDecision, 20),
 	}
 	rc.subID = bus.Subscribe(eventbus.TopicRecoveryNeeded, rc.onRecoveryNeeded)

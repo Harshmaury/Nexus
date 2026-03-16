@@ -55,7 +55,7 @@ func NewProjectController(store state.Storer, bus *eventbus.Bus) *ProjectControl
 	return &ProjectController{
 		store:  store,
 		bus:    bus,
-		events: state.NewEventWriter(store, state.SourceProjectCtrl),
+		events: state.NewEventWriter(store, state.SourceProjectCtrl, state.ComponentNexus),
 	}
 }
 

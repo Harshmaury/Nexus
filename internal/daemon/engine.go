@@ -112,7 +112,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 	return &Engine{
 		store:     cfg.Store,
 		bus:       cfg.Bus,
-		events:    state.NewEventWriter(cfg.Store, state.SourceDaemon),
+		events:    state.NewEventWriter(cfg.Store, state.SourceDaemon, state.ComponentNexus),
 		providers: cfg.Providers,
 		metrics:   metrics,
 		interval:  interval,

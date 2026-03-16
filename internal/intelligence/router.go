@@ -85,7 +85,7 @@ func NewRouter(resolver ProjectResolver, bus *eventbus.Bus, store state.Storer, 
 	return &Router{
 		resolver: resolver,
 		bus:      bus,
-		events:   state.NewEventWriter(store, state.SourceDropSystem),
+		events:   state.NewEventWriter(store, state.SourceDropSystem, state.ComponentDrop),
 		notifier: notifier,
 	}
 }

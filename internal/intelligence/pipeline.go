@@ -55,7 +55,7 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		router:   cfg.Router,
 		logger:   cfg.Logger,
 		bus:      cfg.Bus,
-		events:   state.NewEventWriter(cfg.Store, state.SourceDropSystem),
+		events:   state.NewEventWriter(cfg.Store, state.SourceDropSystem, state.ComponentDrop),
 	}
 	p.subID = cfg.Bus.Subscribe(eventbus.TopicFileDropped, p.onFileDrop)
 	return p

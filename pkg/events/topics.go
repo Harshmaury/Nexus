@@ -26,6 +26,11 @@ import "time"
 // Mirrors eventbus.Topic for cross-module use.
 type Topic = string
 
+// TraceIDHeader is the HTTP header name for cross-service trace propagation.
+// Phase 15: all three services (Nexus, Atlas, Forge) read and forward this header.
+// Import this constant — never hardcode "X-Trace-ID" locally.
+const TraceIDHeader = "X-Trace-ID"
+
 // ── Workspace topics (ADR-002) ────────────────────────────────────────────
 // Published by: internal/watcher/watcher.go
 // Consumers:    Atlas (index updates), Forge Phase 3 (automation triggers)
