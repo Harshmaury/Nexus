@@ -1,91 +1,125 @@
 # WORKFLOW-SESSION.md
-# @version: 3.1.0
-# @updated: 2026-03-16
-# @repo: https://github.com/Harshmaury/Nexus
+# Session: NX-phase15-event-enrichment
+# Date: 2026-03-17
 
----
+## What changed
 
-## Start a Session
+### Nexus Phase 15 — Event log enrichment + X-Trace-ID propagation
+
+**Goal:** Make GET /events a rich observation surface for future observer
+services without adding new infrastructure.
+
+### Files changed
+
+#### New files
+- `nexus/internal/api/middleware/traceid.go`
+  X-Trace-ID middleware. Generates trace ID if absent, stores in context,
+  echoes in response header.
+
+#### Modified — Nexus
+- `nexus/internal/state/db.go`
+  Migration v5: adds `component` and `outcome` columns to events table.
+  Updated AppendEvent signature. New GetEventsSince(sinceID, limit).
+  Updated GetRecentEvents + GetEventsByTrace to scan new fields.
+
+- `nexus/internal/state/storer.go`
+  AppendEvent interface updated with component + outcome params.
+  GetEventsSince added to interface.
+
+- `nexus/internal/state/events.go`
+  EventWriter updated: component field, outcome on every write method.
+  New constants: OutcomeSuccess/Failure/Deferred/Info, ComponentNexus/Drop/System.
+  New method: ServiceDeferred (for reconciler deferred starts).
+  NewEventWriter now takes component as third arg.
+
+- `nexus/internal/api/handler/events.go`
+  Added ?since=<id> query param support (incremental polling for Atlas).
+  Refactored into listSince / listByTrace / listRecent private methods.
+
+- `nexus/internal/api/server.go`
+  middleware.TraceID wired into handler chain (after ServiceAuth).
+
+- `nexus/pkg/events/topics.go`
+  TraceIDHeader = "X-Trace-ID" exported constant.
+
+- `nexus/internal/controllers/health.go`
+  NewEventWriter call updated with ComponentNexus.
+
+- `nexus/internal/controllers/project_controller.go`
+  NewEventWriter call updated with ComponentNexus.
+
+- `nexus/internal/controllers/recovery.go`
+  NewEventWriter call updated with ComponentNexus.
+
+- `nexus/internal/daemon/engine.go`
+  NewEventWriter call updated with ComponentNexus.
+
+- `nexus/internal/watcher/watcher.go`
+  NewEventWriter calls updated with ComponentDrop.
+
+- `nexus/internal/intelligence/pipeline.go`
+  NewEventWriter call updated with ComponentDrop.
+
+- `nexus/internal/intelligence/router.go`
+  NewEventWriter call updated with ComponentDrop.
+
+#### Modified — Atlas
+- `atlas/internal/nexus/client.go`
+  get() now propagates X-Trace-ID from context (Phase 15).
+
+- `atlas/internal/nexus/subscriber.go`
+  poll() updated to use ?since=<id> for efficient incremental polling.
+  Removed unused strconv import.
+
+## Apply command
 
 ```bash
-cd ~/workspace/projects/apps/nexus && ./scripts/verify.sh
+cd ~/workspace/projects/apps/nexus && \
+unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-phase15-event-enrichment-20260317-0000.zip -d . && \
+go build ./... && \
+git add \
+  internal/api/middleware/traceid.go \
+  internal/api/handler/events.go \
+  internal/api/server.go \
+  internal/state/db.go \
+  internal/state/events.go \
+  internal/state/migrations.go \
+  internal/state/storer.go \
+  internal/controllers/health.go \
+  internal/controllers/project_controller.go \
+  internal/controllers/recovery.go \
+  internal/daemon/engine.go \
+  internal/intelligence/pipeline.go \
+  internal/intelligence/router.go \
+  internal/watcher/watcher.go \
+  pkg/events/topics.go \
+  WORKFLOW-SESSION.md && \
+git commit -m "feat: phase 15 — event enrichment + X-Trace-ID propagation" && \
+git push origin main
+
+cd ~/workspace/projects/apps/atlas && \
+unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-phase15-event-enrichment-20260317-0000.zip -d . && \
+go build ./... && \
+git add \
+  internal/nexus/client.go \
+  internal/nexus/subscriber.go \
+  WORKFLOW-SESSION.md && \
+git commit -m "feat: phase 15 — X-Trace-ID propagation + since-based polling" && \
+git push origin main
 ```
 
-Paste output into Claude. Session key format: `NX-<hash>-<YYYYMMDD>`
+## Verification
 
----
+```bash
+# Confirm enriched events
+curl -s http://127.0.0.1:8080/events | jq '.data[0] | {id, type, component, outcome, trace_id}'
 
-## Identity
+# Confirm since polling works
+curl -s "http://127.0.0.1:8080/events?since=0&limit=5" | jq '.data[] | {id, type}'
 
-Developer: Harsh Maury | OS: Ubuntu 24.04 (WSL2) + Windows 11
-Go: 1.24.1 | Drop folder: /mnt/c/Users/harsh/Downloads/engx-drop/
+# Confirm trace ID in response header
+curl -sv http://127.0.0.1:8080/events 2>&1 | grep X-Trace-ID
 
----
-
-## Platform
-
+# Confirm Atlas still polls correctly
+engx events -n 10
 ```
-Control    Nexus  :8080  ← this
-Knowledge  Atlas  :8081
-Execution  Forge  :8082
-```
-
----
-
-## Build Status
-# Last verified: 2026-03-16
-
-✅ Phases 1–14            Complete — full control plane
-✅ ADR-002                Workspace observation (5 topics)
-✅ ADR-008                Inter-service auth (ServiceAuth middleware)
-✅ v1.0.0-fixes-complete  All criticals + highs resolved
-
----
-
-## Environment Variables
-
-```
-NEXUS_DB_PATH             ~/.nexus/nexus.db
-NEXUS_SOCKET              /tmp/engx.sock
-NEXUS_HTTP_ADDR           :8080
-NEXUS_DROP_DIR            ~/nexus-drop
-NEXUS_WORKSPACE           ~/workspace
-NEXUS_RECONCILE_INTERVAL  5s
-NEXUS_HEALTH_INTERVAL     10s
-NEXUS_HEALTH_TIMEOUT      5s
-```
-
----
-
-## Key Files
-
-```
-internal/config/service_tokens.go      LoadServiceTokens — reads ~/.nexus/service-tokens
-internal/api/middleware/service_auth.go ServiceAuth middleware (ADR-008)
-internal/state/db.go                   allMigrations — single source (v1–v4)
-internal/daemon/engine.go              publishResult (context-aware), topoSort (O(n+e))
-internal/intelligence/classifier.go    Classifier (RWMutex, modelDir-based paths)
-internal/agent/client.go               re-registers on heartbeat failure only
-pkg/events/topics.go                   public topic constants for Atlas + Forge
-```
-
----
-
-## Roadmap
-
-Feature-complete. Future work is ADR-driven.
-Next open item: Nexus `GET /events` `?since=` parameter (X1 gap).
-
----
-
-## Commands
-
-All commands in `~/workspace/developer-platform/RUNBOOK.md`.
-
----
-
-## Changelog
-
-2026-03-16  v3.1.0  session doc simplified — commands moved to RUNBOOK.md
-2026-03-16  v3.0.0  All criticals + highs fixed, ADR-008 implemented
-2026-03-15  v2.8.0  ADR-002 workspace observation
