@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/Harshmaury/Canon v0.3.0 // indirect
 	github.com/Microsoft/go-winio v0.4.21 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect

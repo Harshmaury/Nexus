@@ -16,9 +16,12 @@ import (
 	"crypto/subtle"
 	"log"
 	"net/http"
+
+	canon "github.com/Harshmaury/Canon/identity"
 )
 
-const serviceTokenHeader = "X-Service-Token"
+// serviceTokenHeader uses Canon canonical constant (ADR-016).
+var serviceTokenHeader = canon.ServiceTokenHeader
 
 // ServiceAuth returns a middleware that validates X-Service-Token on all
 // requests except GET /health.

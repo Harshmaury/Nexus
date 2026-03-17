@@ -149,7 +149,7 @@ func run(logger *log.Logger) error {
 	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	httpAddr := config.EnvOrDefault("NEXUS_HTTP_ADDR", config.DefaultHTTPAddr)
 	sseBroker := sse.NewBroker()
-
+	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	apiServer := api.NewServer(api.ServerConfig{
 		Addr:          httpAddr,
