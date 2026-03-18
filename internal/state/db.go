@@ -90,18 +90,18 @@ const (
 // Previously this was an in-memory map in RecoveryController — persisting it
 // here means daemon restarts during a back-off window still honour the delay.
 type Service struct {
-	ID           string
-	Name         string
-	Project      string
-	DesiredState ServiceState
-	ActualState  ServiceState
-	Provider     ProviderType
-	Config       string
-	FailCount    int
-	LastFailedAt *time.Time
-	RestartAfter *time.Time // non-nil = back-off pending; persisted (Phase 7.3)
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	Project      string     `json:"project"`
+	DesiredState ServiceState `json:"desired_state"`
+	ActualState  ServiceState `json:"actual_state"`
+	Provider     ProviderType `json:"provider"`
+	Config       string     `json:"config"`
+	FailCount    int        `json:"fail_count"`
+	LastFailedAt *time.Time `json:"last_failed_at,omitempty"`
+	RestartAfter *time.Time `json:"restart_after,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // Event is an immutable log of everything that happened.
@@ -110,15 +110,15 @@ type Service struct {
 //   Component — platform domain that emitted the event (nexus|atlas|forge|drop|system).
 //   Outcome   — result of the action (success|failure|deferred|"").
 type Event struct {
-	ID        int64
-	ServiceID string
-	Type      EventType
-	Source    EventSource
-	TraceID   string
-	Component string
-	Outcome   string
-	Payload   string
-	CreatedAt time.Time
+	ID        int64       `json:"id"`
+	ServiceID string      `json:"service_id"`
+	Type      EventType   `json:"type"`
+	Source    EventSource `json:"source"`
+	TraceID   string      `json:"trace_id"`
+	Component string      `json:"component"`
+	Outcome   string      `json:"outcome"`
+	Payload   string      `json:"payload"`
+	CreatedAt time.Time   `json:"created_at"`
 }
 
 // HealthLog records every health check result.
@@ -147,14 +147,14 @@ type DownloadLog struct {
 
 // Project is a registered project manifest.
 type Project struct {
-	ID           string
-	Name         string
-	Path         string
-	Language     string
-	ProjectType  string
-	ConfigJSON   string
-	RegisteredAt time.Time
-	UpdatedAt    time.Time
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Path         string    `json:"path"`
+	Language     string    `json:"language"`
+	ProjectType  string    `json:"project_type"`
+	ConfigJSON   string    `json:"config_json"`
+	RegisteredAt time.Time `json:"registered_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // ── STORE ────────────────────────────────────────────────────────────────────
