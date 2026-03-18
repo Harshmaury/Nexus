@@ -12,6 +12,8 @@
 //
 // ADR-008 note: X-Trace-ID is not an auth header. It rides alongside
 // X-Service-Token and is always accepted — even on /health.
+//
+// Canon compliance: TraceIDHeader imported from identity — never redefined locally.
 package middleware
 
 import (
@@ -19,18 +21,14 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/Harshmaury/Canon/identity"
 )
 
 // traceIDKey is the unexported context key for the trace ID.
 type traceIDKey struct{}
 
-const (
-	// TraceIDHeader is the HTTP header name for trace propagation.
-	// Shared across Nexus, Atlas, and Forge (Phase 15).
-	TraceIDHeader = "X-Trace-ID"
-
-	traceIDPrefix = "nexus"
-)
+const traceIDPrefix = "nexus"
 
 // TraceID returns middleware that ensures every request carries a trace ID.
 // If the inbound request already has X-Trace-ID, it is reused.
@@ -38,13 +36,13 @@ const (
 // echoed in the response header.
 func TraceID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get(TraceIDHeader)
+		id := r.Header.Get(identity.TraceIDHeader)
 		if id == "" {
 			id = newTraceID()
 		}
 
 		ctx := context.WithValue(r.Context(), traceIDKey{}, id)
-		w.Header().Set(TraceIDHeader, id)
+		w.Header().Set(identity.TraceIDHeader, id)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

@@ -18,6 +18,9 @@
 //   Only Nexus internal components call bus.Publish.
 //   External consumers call bus.Subscribe via their own event loop
 //   (see Atlas internal/nexus/subscriber.go for the polling pattern).
+//
+// NOTE: TraceIDHeader has been moved to github.com/Harshmaury/Canon/identity.
+//   Use identity.TraceIDHeader — never redefine locally (Canon Rule 2).
 package events
 
 import "time"
@@ -25,11 +28,6 @@ import "time"
 // Topic is the type for all platform event topic names.
 // Mirrors eventbus.Topic for cross-module use.
 type Topic = string
-
-// TraceIDHeader is the HTTP header name for cross-service trace propagation.
-// Phase 15: all three services (Nexus, Atlas, Forge) read and forward this header.
-// Import this constant — never hardcode "X-Trace-ID" locally.
-const TraceIDHeader = "X-Trace-ID"
 
 // ── Workspace topics (ADR-002) ────────────────────────────────────────────
 // Published by: internal/watcher/watcher.go
