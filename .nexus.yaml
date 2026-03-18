@@ -2,4 +2,20 @@ name: nexus
 id: nexus
 type: platform-daemon
 language: go
-version: 0.1.0
+version: 1.2.0
+keywords:
+  - nexus
+  - control-plane
+  - orchestration
+  - registry
+capabilities:
+  - project-registry
+  - service-lifecycle
+  - filesystem-observation
+  - event-log
+  - remote-agent
+  - sse-streaming
+depends_on: []
+runtime:
+  provider: process
+  port: 8080
