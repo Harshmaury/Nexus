@@ -1,0 +1,37 @@
+# Build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Test output
+*.test
+*.out
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Nexus runtime state — generated locally, never committed
+.nexus.yaml
+
+# zp local packaging config — like .gitignore for zp
+.zpignore
+
+# Backup files
+*.bak
+*.orig
+
+# OS
+.DS_Store
+Thumbs.db
