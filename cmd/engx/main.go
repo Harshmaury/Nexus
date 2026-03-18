@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -49,7 +50,7 @@ func rootCmd() *cobra.Command {
 
 	root.AddCommand(
 		projectCmd(&socketPath),
-		registerCmd(&socketPath),
+		registerCmd(&socketPath, &httpAddr),
 		servicesCmd(&socketPath),
 		eventsCmd(&socketPath),
 		dropCmd(&socketPath),
@@ -378,7 +379,7 @@ func resolvePendingFile(socketPath, arg string) (string, error) {
 
 // ── REGISTER ──────────────────────────────────────────────────────────────────
 
-func registerCmd(socketPath *string) *cobra.Command {
+func registerCmd(socketPath, httpAddr *string) *cobra.Command {
 	return &cobra.Command{
 		Use: "register <path>", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -398,12 +399,58 @@ func registerCmd(socketPath *string) *cobra.Command {
 			var r map[string]string
 			_ = json.Unmarshal(resp.Data, &r)
 			fmt.Printf("✓ Registered: %s (id: %s)\n", manifest.name, manifest.id)
+
+			// ADR-022: auto-register default service if runtime section present
+			if manifest.runtimeProvider != "" && manifest.runtimeCommand != "" {
+				if err := registerDefaultService(*httpAddr, manifest, projectPath); err != nil {
+					fmt.Printf("  WARNING: service registration skipped: %v\n", err)
+				}
+			}
 			return nil
 		},
 	}
 }
 
-type nexusManifest struct{ id, name, language, projectType, rawYAML string }
+// registerDefaultService calls POST /services/register for the project's
+// default service derived from the runtime section of .nexus.yaml (ADR-022).
+func registerDefaultService(httpAddr string, m *nexusManifest, projectPath string) error {
+	serviceID := m.id + "-daemon"
+	cfg, err := json.Marshal(map[string]any{
+		"command": m.runtimeCommand,
+		"args":    m.runtimeArgs,
+		"dir":     m.runtimeDir,
+	})
+	if err != nil {
+		return fmt.Errorf("build service config: %w", err)
+	}
+	body, _ := json.Marshal(map[string]string{
+		"id":       serviceID,
+		"name":     serviceID,
+		"project":  m.id,
+		"provider": m.runtimeProvider,
+		"config":   string(cfg),
+	})
+	resp, err := http.Post(httpAddr+"/services/register",
+		"application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("POST /services/register: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("POST /services/register: HTTP %d", resp.StatusCode)
+	}
+	fmt.Printf("  ✓ Service registered: %s (provider=%s)\n", serviceID, m.runtimeProvider)
+	return nil
+}
+
+type nexusManifest struct {
+	id, name, language, projectType, rawYAML string
+	// runtime fields — parsed from runtime: section of .nexus.yaml (ADR-022)
+	runtimeProvider string // "process" | "docker" | "k8s"
+	runtimeCommand  string // binary name or path
+	runtimeArgs     []string
+	runtimeDir      string
+}
 
 func readNexusManifest(projectPath string) (*nexusManifest, error) {
 	file, err := os.Open(filepath.Join(projectPath, ".nexus.yaml"))
@@ -415,9 +462,23 @@ func readNexusManifest(projectPath string) (*nexusManifest, error) {
 	}
 	defer file.Close()
 
+	m, lines := scanManifestLines(file)
+	if m.name == "" {
+		return nil, fmt.Errorf(".nexus.yaml missing: name")
+	}
+	if m.runtimeDir == "" {
+		m.runtimeDir = projectPath
+	}
+	m.rawYAML = strings.Join(lines, "\n")
+	return m, nil
+}
+
+// scanManifestLines reads .nexus.yaml line by line and populates a nexusManifest.
+func scanManifestLines(r io.Reader) (*nexusManifest, []string) {
 	m := &nexusManifest{}
 	var lines []string
-	scanner := bufio.NewScanner(file)
+	inRuntime := false
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
 		lines = append(lines, line)
@@ -425,28 +486,52 @@ func readNexusManifest(projectPath string) (*nexusManifest, error) {
 		if strings.HasPrefix(t, "#") || t == "" {
 			continue
 		}
+		if t == "runtime:" {
+			inRuntime = true
+			continue
+		}
+		if inRuntime && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			inRuntime = false
+		}
 		parts := strings.SplitN(t, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
 		k, v := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-		switch k {
-		case "name":
-			m.name = v
-			m.id = strings.ToLower(strings.ReplaceAll(v, " ", "-"))
-		case "id":
-			m.id = v
-		case "language":
-			m.language = v
-		case "type":
-			m.projectType = v
+		if inRuntime {
+			parseRuntimeField(m, k, v)
+		} else {
+			parseTopLevelField(m, k, v)
 		}
 	}
-	if m.name == "" {
-		return nil, fmt.Errorf(".nexus.yaml missing: name")
+	return m, lines
+}
+
+// parseRuntimeField populates runtime fields from the runtime: section.
+func parseRuntimeField(m *nexusManifest, k, v string) {
+	switch k {
+	case "provider":
+		m.runtimeProvider = v
+	case "command":
+		m.runtimeCommand = v
+	case "dir":
+		m.runtimeDir = v
 	}
-	m.rawYAML = strings.Join(lines, "\n")
-	return m, nil
+}
+
+// parseTopLevelField populates top-level fields from .nexus.yaml.
+func parseTopLevelField(m *nexusManifest, k, v string) {
+	switch k {
+	case "name":
+		m.name = v
+		m.id = strings.ToLower(strings.ReplaceAll(v, " ", "-"))
+	case "id":
+		m.id = v
+	case "language":
+		m.language = v
+	case "type":
+		m.projectType = v
+	}
 }
 
 // ── PROJECT / SERVICES / EVENTS / VERSION ─────────────────────────────────────
