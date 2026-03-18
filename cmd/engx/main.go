@@ -56,6 +56,7 @@ func rootCmd() *cobra.Command {
 		dropCmd(&socketPath),
 		watchCmd(&socketPath),
 		agentsCmd(&httpAddr),
+		platformCmd(&socketPath, &httpAddr),
 		versionCmd(),
 	)
 
@@ -698,6 +699,124 @@ func eventsCmd(socketPath *string) *cobra.Command {
 	}
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "count")
 	return cmd
+}
+
+// ── PLATFORM COMMAND ─────────────────────────────────────────────────────────
+
+// platformCmd provides engx platform start|stop|status — one command
+// to control the entire platform instead of running project commands
+// individually for each of the 8 services.
+func platformCmd(socketPath, httpAddr *string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "platform",
+		Short: "Control the full platform (start/stop/status all services)",
+	}
+	cmd.AddCommand(
+		platformStartCmd(socketPath),
+		platformStopCmd(socketPath),
+		platformStatusCmd(socketPath),
+	)
+	return cmd
+}
+
+// platformProjects is the ordered list of platform projects.
+// Nexus is excluded — it must be running before engx can talk to the daemon.
+var platformProjects = []string{
+	"atlas", "forge",
+	"metrics", "navigator", "guardian", "observer", "sentinel",
+}
+
+func platformStartCmd(socketPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start all platform services",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println("Starting platform services...")
+			return forEachProject(*socketPath, platformProjects,
+				daemon.CmdProjectStart, "started", "already running")
+		},
+	}
+}
+
+func platformStopCmd(socketPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop all platform services",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println("Stopping platform services...")
+			return forEachProject(*socketPath, platformProjects,
+				daemon.CmdProjectStop, "stopped", "already stopped")
+		},
+	}
+}
+
+func platformStatusCmd(socketPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show status of all platform services",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := sendCommand(*socketPath, daemon.CmdProjectList, nil)
+			if err != nil {
+				return err
+			}
+			var statuses []*controllers.ProjectStatus
+			if err := json.Unmarshal(resp.Data, &statuses); err != nil {
+				return err
+			}
+			printPlatformStatus(statuses)
+			return nil
+		},
+	}
+}
+
+// printPlatformStatus prints a compact health summary for all platform services.
+func printPlatformStatus(statuses []*controllers.ProjectStatus) {
+	total, healthy := 0, 0
+	for _, proj := range statuses {
+		for _, svc := range proj.Services {
+			total++
+			if svc.IsHealthy {
+				healthy++
+			}
+		}
+	}
+	fmt.Printf("Platform: %d/%d services healthy\n", healthy, total)
+	for _, proj := range statuses {
+		for _, svc := range proj.Services {
+			indicator := "●"
+			if !svc.IsHealthy {
+				indicator = "○"
+			}
+			fmt.Printf("  %s %-20s desired=%-10s actual=%s\n",
+				indicator, svc.Name,
+				string(svc.DesiredState), string(svc.ActualState))
+		}
+	}
+}
+
+// forEachProject sends a lifecycle command to a list of projects.
+func forEachProject(socketPath string, projects []string, cmd daemon.Command, verb, alreadyMsg string) error {
+	for _, proj := range projects {
+		var params any
+		if cmd == daemon.CmdProjectStart {
+			params = daemon.ProjectStartParams{ProjectID: proj}
+		} else {
+			params = daemon.ProjectStopParams{ProjectID: proj}
+		}
+		resp, err := sendCommand(socketPath, cmd, params)
+		if err != nil {
+			fmt.Printf("  ✗ %s: %v\n", proj, err)
+			continue
+		}
+		var r map[string]any
+		_ = json.Unmarshal(resp.Data, &r)
+		if q, _ := r["queued"].(float64); int(q) == 0 {
+			fmt.Printf("  ○ %s: %s\n", proj, alreadyMsg)
+		} else {
+			fmt.Printf("  ✓ %s: %s (%d service)\n", proj, verb, int(q))
+		}
+	}
+	return nil
 }
 
 func versionCmd() *cobra.Command {
