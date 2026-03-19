@@ -1,20 +1,19 @@
 # WORKFLOW-SESSION.md
-# Session: NX-goreleaser-pipeline
+# Session: NX-install-script
 # Date: 2026-03-19
 
-## What changed — goreleaser pipeline (ADR-030)
+## What changed — install script (ADR-031)
 
-Adds the release pipeline that publishes signed tarballs to GitHub Releases
-on every v* tag push. Produces engx-<version>-<os>-<arch>.tar.gz for
-linux/{amd64,arm64}, darwin/{amd64,arm64}, and windows/amd64 (engx+engxa only).
-Checksums manifest: engx-<version>-checksums.txt. Version strings injected via
-ldflags so engx version and GET /health daemon_version reflect the release tag.
+Adds scripts/install.sh — zero-to-running installer for the engx platform.
+Detects OS/arch, resolves latest release from GitHub, downloads and verifies
+the SHA256 checksum, installs binaries to ~/bin/, configures PATH, and
+registers engxd as a launchd/systemd service via engx platform install.
+Shellcheck-clean. Supports --channel beta flag and ENGX_CHANNEL env var.
 
 ## New files
 
-- `.goreleaser.yaml`                              — build + archive + checksum + release config
-- `.github/workflows/release.yml`                 — Actions workflow: on push v* tags
-- `architecture/decisions/ADR-030-goreleaser-pipeline.md` — pipeline contract
+- `scripts/install.sh`                               — installer script
+- `architecture/decisions/ADR-031-install-script.md` — install contract
 
 ## Modified files
 
@@ -24,64 +23,47 @@ ldflags so engx version and GET /health daemon_version reflect the release tag.
 
 ```bash
 cd ~/workspace/projects/apps/nexus && \
-unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-goreleaser-20260319-HHMM.zip -d .
+unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-install-script-20260319-HHMM.zip -d .
+chmod +x scripts/install.sh
 ```
-
-No `go build` required — these are CI/CD config files only.
 
 ## Verify
 
 ```bash
-# Install goreleaser locally if not present
-# curl -fsSL https://goreleaser.com/static/run | bash -s -- --version
+# Dry-run: test platform detection and release resolution only
+# (set ENGX_CHANNEL to avoid real download if desired)
+bash -x scripts/install.sh --channel stable 2>&1 | head -40
 
-# Dry-run locally (builds but does not publish)
-goreleaser release --snapshot --clean
+# Full local test (requires a published GitHub release):
+bash scripts/install.sh
 
 # Expected output:
-#   • starting release
-#   • loading config file   file=.goreleaser.yaml
-#   • building binaries
-#   • creating archives
-#   • calculating checksums
-#   • snapshoting
-#   • storing release metadata
-#   ✓ release succeeded after Xs
-
-# Check produced artifacts
-ls dist/
-# engx-1.5.0-dev-linux-amd64.tar.gz
-# engx-1.5.0-dev-linux-arm64.tar.gz
-# engx-1.5.0-dev-checksums.txt
-# ...
-
-# Verify tarball layout matches install contract
-tar -tzf dist/engx-*-linux-amd64.tar.gz
-# bin/engxd
-# bin/engx
-# bin/engxa
-# LICENSE
-# README.md
-
-# Trigger a real release
-git tag v1.5.0-phase22   # (already tagged — use next version for real release)
-git push origin --tags
-# → Actions workflow fires, release appears at:
-# https://github.com/Harshmaury/Nexus/releases
+#   engx installer  channel=stable
+#   → resolving latest stable release...
+#   ✓ found v1.5.0-phase22
+#   → downloading engx-1.5.0-phase22-linux-amd64.tar.gz...
+#   ✓ downloaded
+#   → verifying SHA256 checksum...
+#   ✓ checksum verified
+#   → extracting to ~/bin/...
+#   ✓ installed engxd
+#   ✓ installed engx
+#   ✓ installed engxa
+#   → adding ~/bin to PATH in ~/.bashrc...
+#   ✓ PATH updated
+#   → registering engxd as a system service...
+#   ✓ engxd registered — will auto-start on login
+#
+#   engx 1.5.0-phase22 installed successfully.
 ```
 
 ## Commit
 
 ```bash
 git add \
-  .goreleaser.yaml \
-  .github/workflows/release.yml \
-  architecture/decisions/ADR-030-goreleaser-pipeline.md \
+  scripts/install.sh \
+  architecture/decisions/ADR-031-install-script.md \
   WORKFLOW-SESSION.md && \
-git commit -m "chore(release): goreleaser pipeline + GitHub Actions workflow (ADR-030)" && \
+git commit -m "chore(release): zero-to-running install script (ADR-031)" && \
 git push origin main
 ```
-
-Note: no version tag on this commit — the pipeline itself is not a versioned
-feature of the platform runtime. The next feature tag (v1.6.0-phase23 or
-similar) will be the first real goreleaser-published release.
