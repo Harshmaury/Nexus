@@ -1170,8 +1170,13 @@ func printFetchErrors(d *doctorReport) {
 
 func printSuggestions(d *doctorReport) {
 	suggestions := buildSuggestions(d)
-	if len(suggestions) == 0 {
+	sentinelBad := d.sentinel.Health == "incident" || d.sentinel.Health == "degraded"
+	if len(suggestions) == 0 && d.guardian.Errors == 0 && !sentinelBad {
 		fmt.Println("  Platform looks healthy. No actions needed.")
+		return
+	}
+	if len(suggestions) == 0 {
+		fmt.Println("  Issues detected — check guardian and sentinel findings above.")
 		return
 	}
 	fmt.Println("  Suggested actions:")
