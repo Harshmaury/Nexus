@@ -19,6 +19,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/state"
+	canon "github.com/Harshmaury/Canon/identity"
 	"github.com/spf13/cobra"
 )
 
@@ -58,13 +59,22 @@ func rootCmd() *cobra.Command {
 		agentsCmd(&httpAddr),
 		platformCmd(&socketPath, &httpAddr),
 		doctorCmd(&httpAddr),
-		logsCmd(),
+		logsFollowCmd(),
 		buildCmd(&httpAddr),
 		checkCmd(&httpAddr),
 		runCmd(&socketPath, &httpAddr),
 		initCmd(&socketPath, &httpAddr),
 		traceCmd(),
 		versionCmd(),
+		statusCmd(&httpAddr),
+		sentinelCmd(&httpAddr),
+		workflowCmd(&httpAddr),
+		triggerCmd(&httpAddr),
+		guardCmd(&httpAddr),
+		onCmd(&httpAddr),
+		execCmd(&httpAddr),
+		ciCmd(&httpAddr),
+		eventsStreamCmd(&httpAddr),
 	)
 
 	return root
@@ -1242,7 +1252,7 @@ func getJSONWithToken(url, token string, out any) error {
 		return err
 	}
 	if token != "" {
-		req.Header.Set("X-Service-Token", token)
+		req.Header.Set(canon.ServiceTokenHeader, token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
