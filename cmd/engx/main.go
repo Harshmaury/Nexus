@@ -59,6 +59,9 @@ func rootCmd() *cobra.Command {
 		platformCmd(&socketPath, &httpAddr),
 		doctorCmd(&httpAddr),
 		logsCmd(),
+		buildCmd(&httpAddr),
+		checkCmd(&httpAddr),
+		runCmd(&socketPath, &httpAddr),
 		versionCmd(),
 	)
 
@@ -1215,7 +1218,18 @@ func buildSuggestions(d *doctorReport) []string {
 // ── DOCTOR HELPERS ────────────────────────────────────────────────────────────
 
 func getJSON(url string, out any) error {
-	resp, err := http.Get(url)
+	return getJSONWithToken(url, "", out)
+}
+
+func getJSONWithToken(url, token string, out any) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		req.Header.Set("X-Service-Token", token)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -1286,6 +1300,275 @@ func printLastLines(s string, n int) error {
 		fmt.Println(line)
 	}
 	return nil
+}
+
+// ── BUILD COMMAND ─────────────────────────────────────────────────────────────
+
+// buildCmd calls POST /commands on Forge with intent=build.
+// Shows build output and errors directly in the terminal.
+func buildCmd(httpAddr *string) *cobra.Command {
+	var forgeAddr, lang, projectPath string
+	cmd := &cobra.Command{
+		Use:   "build <project-id>",
+		Short: "Build a project via Forge",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := args[0]
+			fmt.Printf("Building %s...\n", target)
+			result, err := forgeCommand(forgeAddr, "build", target, lang, projectPath)
+			if err != nil {
+				return err
+			}
+			return printForgeResult(result)
+		},
+	}
+	cmd.Flags().StringVar(&forgeAddr, "forge", "http://127.0.0.1:8082",
+		"Forge HTTP address")
+	cmd.Flags().StringVarP(&lang, "language", "l", "go",
+		"project language (go, python, node, rust)")
+	cmd.Flags().StringVar(&projectPath, "path", "",
+		"project path (overrides Atlas lookup)")
+	return cmd
+}
+
+// forgeCommand submits a command to Forge and returns the result.
+// Passes context.language and context.project_path directly so Forge
+// doesn't need Atlas to resolve them — safe when Atlas is unavailable.
+func forgeCommand(httpAddr, intent, target, language, projectPath string) (map[string]any, error) {
+	payload := map[string]any{
+		"intent": intent,
+		"target": target,
+	}
+	if language != "" || projectPath != "" {
+		ctx := map[string]string{}
+		if language != "" {
+			ctx["language"] = language
+		}
+		if projectPath != "" {
+			ctx["project_path"] = projectPath
+		}
+		payload["context"] = ctx
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := http.Post(
+		httpAddr+"/commands",
+		"application/json",
+		strings.NewReader(string(body)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("cannot reach forge at %s: %w", httpAddr, err)
+	}
+	defer resp.Body.Close()
+	var result struct {
+		OK    bool           `json:"ok"`
+		Data  map[string]any `json:"data"`
+		Error string         `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode forge response: %w", err)
+	}
+	if !result.OK {
+		return nil, fmt.Errorf("forge: %s", result.Error)
+	}
+	return result.Data, nil
+}
+
+// printForgeResult formats a Forge ExecutionResult for the terminal.
+func printForgeResult(r map[string]any) error {
+	success, _ := r["success"].(bool)
+	duration, _ := r["duration"].(string)
+	output, _ := r["output"].(string)
+	errMsg, _ := r["error"].(string)
+
+	if success {
+		fmt.Printf("✓ success in %s\n", duration)
+		if output != "" {
+			fmt.Println(output)
+		}
+		return nil
+	}
+	fmt.Printf("✗ failed in %s\n", duration)
+	if errMsg != "" {
+		fmt.Println(errMsg)
+	}
+	return fmt.Errorf("build failed")
+}
+
+// ── CHECK COMMAND ─────────────────────────────────────────────────────────────
+
+// checkCmd aggregates Atlas capabilities + Guardian findings for one project.
+// Answers: "is this project ready to build/run?"
+func checkCmd(httpAddr *string) *cobra.Command {
+	var atlasAddr, token string
+	cmd := &cobra.Command{
+		Use:   "check <project-id>",
+		Short: "Check a project's health — capabilities, status, Guardian findings",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := args[0]
+			printProjectAtlas(atlasAddr, token, id)
+			printProjectGuardian(id)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&atlasAddr, "atlas", "http://127.0.0.1:8081",
+		"Atlas HTTP address")
+	cmd.Flags().StringVar(&token, "token", "",
+		"X-Service-Token (if auth is enabled)")
+	return cmd
+}
+
+// printProjectAtlas fetches and prints Atlas status for a project.
+func printProjectAtlas(atlasAddr, token, id string) {
+	var result struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			ID           string   `json:"id"`
+			Status       string   `json:"status"`
+			Language     string   `json:"language"`
+			Capabilities []string `json:"capabilities"`
+			DependsOn    []string `json:"depends_on"`
+		} `json:"data"`
+	}
+	url := fmt.Sprintf("%s/workspace/project/%s", atlasAddr, id)
+	if err := getJSONWithToken(url, token, &result); err != nil {
+		fmt.Printf("  atlas: unavailable (%v)\n", err)
+		return
+	}
+	icon := "✓"
+	if result.Data.Status != "verified" {
+		icon = "○"
+	}
+	fmt.Printf("%s atlas: %s  status=%s  language=%s\n",
+		icon, id, result.Data.Status, result.Data.Language)
+	if len(result.Data.Capabilities) > 0 {
+		fmt.Printf("  capabilities: %s\n",
+			strings.Join(result.Data.Capabilities, ", "))
+	}
+}
+
+// printProjectGuardian prints Guardian findings for a specific target.
+func printProjectGuardian(id string) {
+	var result struct {
+		Data struct {
+			Findings []struct {
+				RuleID   string `json:"rule_id"`
+				Target   string `json:"target"`
+				Message  string `json:"message"`
+				Severity string `json:"severity"`
+			} `json:"findings"`
+			Summary struct {
+				Total int `json:"total"`
+			} `json:"summary"`
+		} `json:"data"`
+	}
+	if err := getJSON("http://127.0.0.1:8085/guardian/findings", &result); err != nil {
+		fmt.Printf("  guardian: unavailable\n")
+		return
+	}
+	var mine []struct {
+		RuleID  string
+		Message string
+	}
+	for _, f := range result.Data.Findings {
+		if f.Target == id {
+			mine = append(mine, struct {
+				RuleID  string
+				Message string
+			}{f.RuleID, f.Message})
+		}
+	}
+	if len(mine) == 0 {
+		fmt.Println("✓ guardian: no findings for this project")
+		return
+	}
+	fmt.Printf("○ guardian: %d finding(s)\n", len(mine))
+	for _, f := range mine {
+		fmt.Printf("  [%s] %s\n", f.RuleID, truncate(f.Message, 70))
+	}
+}
+
+// ── RUN COMMAND ───────────────────────────────────────────────────────────────
+
+// runCmd starts a project via Nexus and optionally waits until running.
+func runCmd(socketPath, httpAddr *string) *cobra.Command {
+	var wait bool
+	var timeout int
+	cmd := &cobra.Command{
+		Use:   "run <project-id>",
+		Short: "Start a project and optionally wait until its services are running",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := args[0]
+			resp, err := sendCommand(*socketPath,
+				daemon.CmdProjectStart,
+				daemon.ProjectStartParams{ProjectID: id})
+			if err != nil {
+				return err
+			}
+			var r map[string]any
+			_ = json.Unmarshal(resp.Data, &r)
+			queued, _ := r["queued"].(float64)
+			if int(queued) == 0 {
+				fmt.Printf("✓ %s: already running\n", id)
+				return nil
+			}
+			fmt.Printf("✓ %s: queued %d service(s)\n", id, int(queued))
+			if !wait {
+				return nil
+			}
+			return waitForProject(*httpAddr, id, timeout)
+		},
+	}
+	cmd.Flags().BoolVarP(&wait, "wait", "w", false,
+		"wait until all services are running")
+	cmd.Flags().IntVarP(&timeout, "timeout", "t", 60,
+		"timeout in seconds when --wait is set")
+	return cmd
+}
+
+// waitForProject polls GET /services?project=<id> until all are running.
+func waitForProject(httpAddr, id string, timeoutSecs int) error {
+	deadline := time.Now().Add(time.Duration(timeoutSecs) * time.Second)
+	fmt.Printf("Waiting for %s (timeout %ds)...\n", id, timeoutSecs)
+	for time.Now().Before(deadline) {
+		time.Sleep(3 * time.Second)
+		running, total, err := projectServiceStates(httpAddr, id)
+		if err != nil {
+			continue
+		}
+		fmt.Printf("  %d/%d running\n", running, total)
+		if running == total && total > 0 {
+			fmt.Printf("✓ %s: all services running\n", id)
+			return nil
+		}
+	}
+	return fmt.Errorf("timeout: %s not fully running after %ds", id, timeoutSecs)
+}
+
+// projectServiceStates returns (running, total) for a project's services.
+func projectServiceStates(httpAddr, projectID string) (int, int, error) {
+	var result struct {
+		Data []struct {
+			ActualState  string `json:"actual_state"`
+			DesiredState string `json:"desired_state"`
+		} `json:"data"`
+	}
+	url := fmt.Sprintf("%s/services?project=%s", httpAddr, projectID)
+	if err := getJSON(url, &result); err != nil {
+		return 0, 0, err
+	}
+	total, running := 0, 0
+	for _, s := range result.Data {
+		if s.DesiredState == "stopped" {
+			continue
+		}
+		total++
+		if s.ActualState == "running" {
+			running++
+		}
+	}
+	return running, total, nil
 }
 
 func versionCmd() *cobra.Command {
