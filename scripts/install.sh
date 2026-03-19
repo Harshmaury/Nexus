@@ -91,22 +91,17 @@ resolve_release() {
     || die "failed to reach GitHub API — check your internet connection"
 
   # Pick first non-draft release; for stable, skip pre-releases.
-  TAG=""
-  while IFS= read -r line; do
-    local tag prerelease draft
-    tag="$(echo "$line"        | grep '"tag_name"'   | head -1 | sed 's/.*: *"\(.*\)".*/\1/')"
-    prerelease="$(echo "$line" | grep '"prerelease"' | head -1 | sed 's/.*: *\(.*\),.*/\1/' | tr -d ' ')"
-    draft="$(echo "$line"      | grep '"draft"'      | head -1 | sed 's/.*: *\(.*\),.*/\1/' | tr -d ' ')"
-    [ -z "$tag" ] && continue
-    [ "$draft" = "true" ] && continue
-    [ "$CHANNEL" = "stable" ] && [ "$prerelease" = "true" ] && continue
-    TAG="$tag"
+  TAG="$(echo "$releases" | python3 -c "
+import sys, json
+releases = json.load(sys.stdin)
+channel = '${CHANNEL}'
+for r in releases:
+    if r.get('draft'): continue
+    if channel == 'stable' and r.get('prerelease'): continue
+    print(r['tag_name'])
     break
-  done < <(echo "$releases" | grep -E '"tag_name"|"prerelease"|"draft"')
-
+" 2>/dev/null)"
   [ -n "$TAG" ] || die "no ${CHANNEL} release found in the last 20 releases"
-
-  # Version is tag without leading 'v'
   VERSION="${TAG#v}"
   ok "found ${TAG}"
 }
