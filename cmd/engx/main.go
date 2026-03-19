@@ -63,6 +63,7 @@ func rootCmd() *cobra.Command {
 		checkCmd(&httpAddr),
 		runCmd(&socketPath, &httpAddr),
 		initCmd(&socketPath, &httpAddr),
+		traceCmd(),
 		versionCmd(),
 	)
 
@@ -1330,9 +1331,13 @@ func buildCmd(httpAddr *string) *cobra.Command {
 			target := args[0]
 			// Auto-resolve path and language from .nexus.yaml if not provided.
 			if projectPath == "" || lang == "" {
-				if resolved := resolveProjectMeta(target); resolved != nil {
-					if projectPath == "" { projectPath = resolved.dir }
-					if lang == "" { lang = resolved.language }
+				if resolved := resolveProjectMeta(target, projectPath, lang); resolved != nil {
+					if projectPath == "" {
+						projectPath = resolved.dir
+					}
+					if lang == "" {
+						lang = resolved.language
+					}
 				}
 			}
 			fmt.Printf("Building %s...\n", target)
@@ -1346,10 +1351,152 @@ func buildCmd(httpAddr *string) *cobra.Command {
 	cmd.Flags().StringVar(&forgeAddr, "forge", "http://127.0.0.1:8082",
 		"Forge HTTP address")
 	cmd.Flags().StringVarP(&lang, "language", "l", "",
-		"project language — auto-detected if omitted")
+		"project language (go, python, node, rust) — auto-detected if omitted")
 	cmd.Flags().StringVar(&projectPath, "path", "",
-		"project path (overrides Atlas lookup)")
+		"project path — auto-resolved from .nexus.yaml if omitted")
 	return cmd
+}
+
+// ── TRACE COMMAND ─────────────────────────────────────────────────────────────
+
+// traceCmd surfaces trace timelines from Observer (ADR-014).
+func traceCmd() *cobra.Command {
+	var observerAddr string
+	cmd := &cobra.Command{
+		Use:   "trace [trace-id]",
+		Short: "Show trace timeline — omit ID to list recent traces",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return traceList(observerAddr)
+			}
+			return traceShow(observerAddr, args[0])
+		},
+	}
+	cmd.Flags().StringVar(&observerAddr, "observer", "http://127.0.0.1:8086",
+		"Observer HTTP address")
+	return cmd
+}
+
+// traceList prints the 50 most recent trace IDs from Observer.
+func traceList(addr string) error {
+	var result struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Traces []struct {
+				TraceID    string    `json:"trace_id"`
+				FirstSeen  time.Time `json:"first_seen"`
+				EventCount int       `json:"event_count"`
+			} `json:"traces"`
+		} `json:"data"`
+	}
+	if err := getJSON(addr+"/traces/recent", &result); err != nil {
+		return fmt.Errorf("observer unavailable: %w", err)
+	}
+	if len(result.Data.Traces) == 0 {
+		fmt.Println("No traces collected yet.")
+		return nil
+	}
+	fmt.Printf("Recent traces (%d):\n", len(result.Data.Traces))
+	for _, t := range result.Data.Traces {
+		fmt.Printf("  %s  events=%-3d  first=%s\n",
+			t.TraceID, t.EventCount, t.FirstSeen.Format("15:04:05"))
+	}
+	fmt.Println()
+	fmt.Println("  Run: engx trace <trace-id>  to see the full timeline")
+	return nil
+}
+
+// traceShow prints the full correlated timeline for one trace ID.
+func traceShow(addr, traceID string) error {
+	var result struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			TraceID  string `json:"trace_id"`
+			Summary  struct {
+				DurationMS     int64 `json:"duration_ms"`
+				EventCount     int   `json:"event_count"`
+				ExecutionCount int   `json:"execution_count"`
+			} `json:"summary"`
+			Timeline []struct {
+				At      time.Time `json:"at"`
+				Source  string    `json:"source"`
+				Type    string    `json:"type"`
+				Outcome string    `json:"outcome"`
+				Status  string    `json:"status"`
+				Target  string    `json:"target"`
+				Intent  string    `json:"intent"`
+				Message string    `json:"message"`
+			} `json:"timeline"`
+		} `json:"data"`
+	}
+	if err := getJSON(addr+"/traces/"+traceID, &result); err != nil {
+		return fmt.Errorf("observer unavailable: %w", err)
+	}
+	d := result.Data
+	fmt.Printf("Trace: %s\n", d.TraceID)
+	fmt.Printf("  events=%d  executions=%d  duration=%dms\n\n",
+		d.Summary.EventCount, d.Summary.ExecutionCount, d.Summary.DurationMS)
+	for i := range d.Timeline {
+		e := d.Timeline[i]
+		fmt.Printf("  %s [%-5s] %s\n",
+			e.At.Format("15:04:05.000"), e.Source,
+			formatTimelineEntry(e.Type, e.Target, e.Intent, e.Outcome, e.Status, e.Message))
+	}
+	if len(d.Timeline) == 0 {
+		fmt.Println("  No entries — trace may have expired (Observer ring buffer: 50 traces max).")
+	}
+	return nil
+}
+
+// formatTimelineEntry builds a human-readable description of one timeline entry.
+func formatTimelineEntry(typ, target, intent, outcome, status, message string) string {
+	detail := typ
+	if target != "" {
+		detail += " → " + target
+	}
+	if intent != "" {
+		detail += " (" + intent + ")"
+	}
+	if outcome != "" {
+		detail += " " + outcome
+	}
+	if status != "" && status != outcome {
+		detail += " " + status
+	}
+	if message != "" {
+		detail += ": " + truncate(message, 60)
+	}
+	return detail
+}
+
+// resolveProjectMeta finds path and language for a project target by reading
+// .nexus.yaml from the current directory or known workspace locations.
+func resolveProjectMeta(target, hintPath, hintLang string) *projectInfo {
+	candidates := []string{}
+	if hintPath != "" {
+		candidates = append(candidates, hintPath)
+	}
+	// Current directory
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, cwd)
+	}
+	// ~/workspace/projects/apps/<target>
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, "workspace", "projects", "apps", target))
+	}
+	for _, dir := range candidates {
+		nexusYAML := filepath.Join(dir, ".nexus.yaml")
+		if !fileExists(nexusYAML) {
+			continue
+		}
+		info, err := detectProject(dir)
+		if err == nil && (info.id == target || info.name == target || hintPath == dir) {
+			return info
+		}
+	}
+	return nil
 }
 
 // forgeCommand submits a command to Forge and returns the result.
@@ -1808,28 +1955,6 @@ func hasGoCmd(dir string) bool {
 		}
 	}
 	return false
-}
-
-// resolveProjectMeta finds path and language for a project by reading
-// .nexus.yaml from known workspace locations.
-func resolveProjectMeta(target string) *projectInfo {
-	home, _ := os.UserHomeDir()
-	cwd, _ := os.Getwd()
-	candidates := []string{
-		cwd,
-		filepath.Join(home, "workspace", "projects", "apps", target),
-		filepath.Join(home, "workspace", target),
-	}
-	for _, dir := range candidates {
-		if !fileExists(filepath.Join(dir, ".nexus.yaml")) {
-			continue
-		}
-		info, err := detectProject(dir)
-		if err == nil && (info.id == target || info.name == target || filepath.Base(dir) == target) {
-			return info
-		}
-	}
-	return nil
 }
 
 func versionCmd() *cobra.Command {
