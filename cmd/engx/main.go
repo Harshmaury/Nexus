@@ -22,7 +22,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const cliVersion = "0.1.0"
+const cliVersion = "0.5.0"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -1328,6 +1328,13 @@ func buildCmd(httpAddr *string) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
+			// Auto-resolve path and language from .nexus.yaml if not provided.
+			if projectPath == "" || lang == "" {
+				if resolved := resolveProjectMeta(target); resolved != nil {
+					if projectPath == "" { projectPath = resolved.dir }
+					if lang == "" { lang = resolved.language }
+				}
+			}
 			fmt.Printf("Building %s...\n", target)
 			result, err := forgeCommand(forgeAddr, "build", target, lang, projectPath)
 			if err != nil {
@@ -1338,8 +1345,8 @@ func buildCmd(httpAddr *string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&forgeAddr, "forge", "http://127.0.0.1:8082",
 		"Forge HTTP address")
-	cmd.Flags().StringVarP(&lang, "language", "l", "go",
-		"project language (go, python, node, rust)")
+	cmd.Flags().StringVarP(&lang, "language", "l", "",
+		"project language — auto-detected if omitted")
 	cmd.Flags().StringVar(&projectPath, "path", "",
 		"project path (overrides Atlas lookup)")
 	return cmd
@@ -1801,6 +1808,28 @@ func hasGoCmd(dir string) bool {
 		}
 	}
 	return false
+}
+
+// resolveProjectMeta finds path and language for a project by reading
+// .nexus.yaml from known workspace locations.
+func resolveProjectMeta(target string) *projectInfo {
+	home, _ := os.UserHomeDir()
+	cwd, _ := os.Getwd()
+	candidates := []string{
+		cwd,
+		filepath.Join(home, "workspace", "projects", "apps", target),
+		filepath.Join(home, "workspace", target),
+	}
+	for _, dir := range candidates {
+		if !fileExists(filepath.Join(dir, ".nexus.yaml")) {
+			continue
+		}
+		info, err := detectProject(dir)
+		if err == nil && (info.id == target || info.name == target || filepath.Base(dir) == target) {
+			return info
+		}
+	}
+	return nil
 }
 
 func versionCmd() *cobra.Command {
