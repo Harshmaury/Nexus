@@ -114,7 +114,12 @@ jobs:
             cp LICENSE README.md dist/darwin-${arch}/
             tar -czf "dist/${tarball}" -C dist/darwin-${arch} bin LICENSE README.md
             # Write bare filename (no dist/ prefix) to match Linux checksum format
-            echo "$(sha256sum "dist/${tarball}" | awk '{print $1}')  ${tarball}"               >> "dist/engx-${VERSION}-darwin-checksums.txt"
+            if command -v sha256sum &>/dev/null; then
+              sum=$(sha256sum "dist/${tarball}" | awk '{print $1}')
+            else
+              sum=$(shasum -a 256 "dist/${tarball}" | awk '{print $1}')
+            fi
+            echo "${sum}  ${tarball}" >> "dist/engx-${VERSION}-darwin-checksums.txt"
           done
 
       - name: Upload darwin assets to GitHub Release
