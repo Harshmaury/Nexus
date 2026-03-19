@@ -714,7 +714,7 @@ func platformCmd(socketPath, httpAddr *string) *cobra.Command {
 	cmd.AddCommand(
 		platformStartCmd(socketPath),
 		platformStopCmd(socketPath),
-		platformStatusCmd(socketPath),
+		platformStatusCmd(socketPath, httpAddr),
 	)
 	return cmd
 }
@@ -750,26 +750,42 @@ func platformStopCmd(socketPath *string) *cobra.Command {
 	}
 }
 
-func platformStatusCmd(socketPath *string) *cobra.Command {
+func platformStatusCmd(socketPath, httpAddr *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show status of all platform services",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := sendCommand(*socketPath, daemon.CmdProjectList, nil)
+			resp, err := http.Get(*httpAddr + "/services")
 			if err != nil {
-				return err
+				return fmt.Errorf("cannot reach engxd: %w", err)
 			}
-			var statuses []*controllers.ProjectStatus
-			if err := json.Unmarshal(resp.Data, &statuses); err != nil {
-				return err
+			defer resp.Body.Close()
+			var result struct {
+				Data []struct {
+					Name         string `json:"name"`
+					DesiredState string `json:"desired_state"`
+					ActualState  string `json:"actual_state"`
+				} `json:"data"`
 			}
-			printPlatformStatus(statuses)
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				return fmt.Errorf("decode: %w", err)
+			}
+			total, running := 0, 0
+			for _, s := range result.Data {
+				total++
+				if s.ActualState == "running" { running++ }
+			}
+			fmt.Printf("Platform: %d/%d services running\n", running, total)
+			for _, s := range result.Data {
+				ind := "●"
+				if s.ActualState != "running" { ind = "○" }
+				fmt.Printf("  %s %-20s desired=%-12s actual=%s\n", ind, s.Name, s.DesiredState, s.ActualState)
+			}
 			return nil
 		},
 	}
 }
 
-// printPlatformStatus prints a compact health summary for all platform services.
 func printPlatformStatus(statuses []*controllers.ProjectStatus) {
 	total, healthy := 0, 0
 	for _, proj := range statuses {
