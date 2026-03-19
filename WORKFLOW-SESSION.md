@@ -1,91 +1,87 @@
 # WORKFLOW-SESSION.md
-# Session: NX-phase22-doctor-extended
+# Session: NX-goreleaser-pipeline
 # Date: 2026-03-19
 
-## What changed — Nexus Phase 21+22: engx upgrade (ADR-028) + doctor extended (ADR-029)
+## What changed — goreleaser pipeline (ADR-030)
 
-Phase 21: adds `engx upgrade` — self-update command that downloads the latest
-GitHub release, verifies SHA256, runs doctor preflight, then atomically swaps
-engxd/engx/engxa in ~/bin/. No new dependencies (stdlib only).
-
-Phase 22: extends `engx doctor` with five local filesystem checks: SQLite
-integrity, port conflicts, binary version cross-check (CLI vs daemon), ~/.nexus/
-permissions, and service-tokens age warning. GET /health now returns
-daemon_version for the version cross-check. Doctor is now a genuine preflight
-safety gate for engx upgrade.
+Adds the release pipeline that publishes signed tarballs to GitHub Releases
+on every v* tag push. Produces engx-<version>-<os>-<arch>.tar.gz for
+linux/{amd64,arm64}, darwin/{amd64,arm64}, and windows/amd64 (engx+engxa only).
+Checksums manifest: engx-<version>-checksums.txt. Version strings injected via
+ldflags so engx version and GET /health daemon_version reflect the release tag.
 
 ## New files
 
-- `architecture/decisions/ADR-029-doctor-extended-checks.md` — extended doctor rules
-- `cmd/engx/cmd_doctor_fs.go`    — five local FS checks (collectFS, printFS)
-- `cmd/engx/cmd_upgrade.go`      — engx upgrade command (ADR-028)
-- `internal/upgrade/release.go`  — GitHub Releases API resolution
-- `internal/upgrade/verifier.go` — SHA256 checksum verification
-- `internal/upgrade/installer.go`— download, extract, preflight, atomic swap
-- `internal/upgrade/platform.go` — OS/arch detection
+- `.goreleaser.yaml`                              — build + archive + checksum + release config
+- `.github/workflows/release.yml`                 — Actions workflow: on push v* tags
+- `architecture/decisions/ADR-030-goreleaser-pipeline.md` — pipeline contract
 
 ## Modified files
 
-- `cmd/engx/main.go`        — upgradeCmd wired; doctorReport.fsChecks added;
-                              collectFS + printFS wired; cliVersion → 1.5.0
-- `cmd/engxd/main.go`       — DaemonVersion passed into api.ServerConfig
-- `internal/api/server.go`  — ServerConfig.DaemonVersion; makeHealthHandler
-                              replaces handleHealth; daemon_version in /health
-- `nexus.yaml`              — version: 1.5.0-phase22
+- `WORKFLOW-SESSION.md` — this file
 
 ## Apply
 
 ```bash
 cd ~/workspace/projects/apps/nexus && \
-unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-phase22-doctor-extended-20260319-HHMM.zip -d . && \
-go build ./...
+unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-goreleaser-20260319-HHMM.zip -d .
 ```
+
+No `go build` required — these are CI/CD config files only.
 
 ## Verify
 
 ```bash
-# Build check
-go build ./...
+# Install goreleaser locally if not present
+# curl -fsSL https://goreleaser.com/static/run | bash -s -- --version
 
-# Doctor shows new FS checks section
-go run ./cmd/engx doctor
+# Dry-run locally (builds but does not publish)
+goreleaser release --snapshot --clean
 
-# Expected new lines in output:
-#   ✓ db-integrity
-#   ✓ port-conflicts
-#   ✓ binary-versions      engx=1.5.0 engxd=1.5.0   (or "daemon unreachable — skipped")
-#   ✓ nexus-perms
-#   ✓ token-age            N days old
+# Expected output:
+#   • starting release
+#   • loading config file   file=.goreleaser.yaml
+#   • building binaries
+#   • creating archives
+#   • calculating checksums
+#   • snapshoting
+#   • storing release metadata
+#   ✓ release succeeded after Xs
 
-# Upgrade dry-run (requires live internet to GitHub)
-go run ./cmd/engx upgrade --dry-run
+# Check produced artifacts
+ls dist/
+# engx-1.5.0-dev-linux-amd64.tar.gz
+# engx-1.5.0-dev-linux-arm64.tar.gz
+# engx-1.5.0-dev-checksums.txt
+# ...
 
-# Version output
-go run ./cmd/engx version
-# engx version 1.5.0
+# Verify tarball layout matches install contract
+tar -tzf dist/engx-*-linux-amd64.tar.gz
+# bin/engxd
+# bin/engx
+# bin/engxa
+# LICENSE
+# README.md
 
-# Health endpoint now includes daemon_version
-curl -s http://127.0.0.1:8080/health | jq
-# { "ok": true, "status": "healthy", "daemon_version": "0.1.0" }
+# Trigger a real release
+git tag v1.5.0-phase22   # (already tagged — use next version for real release)
+git push origin --tags
+# → Actions workflow fires, release appears at:
+# https://github.com/Harshmaury/Nexus/releases
 ```
 
 ## Commit
 
 ```bash
 git add \
-  architecture/decisions/ADR-029-doctor-extended-checks.md \
-  cmd/engx/cmd_doctor_fs.go \
-  cmd/engx/cmd_upgrade.go \
-  cmd/engx/main.go \
-  cmd/engxd/main.go \
-  internal/api/server.go \
-  internal/upgrade/release.go \
-  internal/upgrade/verifier.go \
-  internal/upgrade/installer.go \
-  internal/upgrade/platform.go \
-  nexus.yaml \
+  .goreleaser.yaml \
+  .github/workflows/release.yml \
+  architecture/decisions/ADR-030-goreleaser-pipeline.md \
   WORKFLOW-SESSION.md && \
-git commit -m "feat(phase21+22): engx upgrade (ADR-028) + doctor extended checks (ADR-029)" && \
-git tag v1.5.0-phase22 && \
-git push origin main --tags
+git commit -m "chore(release): goreleaser pipeline + GitHub Actions workflow (ADR-030)" && \
+git push origin main
 ```
+
+Note: no version tag on this commit — the pipeline itself is not a versioned
+feature of the platform runtime. The next feature tag (v1.6.0-phase23 or
+similar) will be the first real goreleaser-published release.

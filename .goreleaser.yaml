@@ -115,6 +115,9 @@ archives:
     #   engx-<version>-<GOOS>-<GOARCH>.tar.gz
     name_template: "engx-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     format: tar.gz
+    # engxd is linux-only (CGO); engx+engxa cover linux+darwin.
+    # Binary count differs per platform by design — suppress the goreleaser guard.
+    allow_different_binary_count: true
     files:
       - LICENSE
       - README.md

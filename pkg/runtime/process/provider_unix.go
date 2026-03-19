@@ -1,5 +1,7 @@
 // @nexus-project: nexus
-// @nexus-path: pkg/runtime/process/provider.go
+// @nexus-path: pkg/runtime/process/provider_unix.go
+
+//go:build !windows
 // Package process implements runtime.Provider for local OS processes.
 // Every process Nexus manages runs as a background child of engxd, with its
 // PID persisted to ~/.nexus/pids/<service-id>.pid so IsRunning survives
