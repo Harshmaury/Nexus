@@ -113,7 +113,8 @@ jobs:
             tarball="engx-${VERSION}-darwin-${arch}.tar.gz"
             cp LICENSE README.md dist/darwin-${arch}/
             tar -czf "dist/${tarball}" -C dist/darwin-${arch} bin LICENSE README.md
-            sha256sum "dist/${tarball}" >> "dist/engx-${VERSION}-darwin-checksums.txt"
+            # Write bare filename (no dist/ prefix) to match Linux checksum format
+            echo "$(sha256sum "dist/${tarball}" | awk '{print $1}')  ${tarball}"               >> "dist/engx-${VERSION}-darwin-checksums.txt"
           done
 
       - name: Upload darwin assets to GitHub Release
