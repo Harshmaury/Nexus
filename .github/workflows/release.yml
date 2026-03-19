@@ -132,11 +132,17 @@ jobs:
               "dist/engx-${VERSION}-darwin-${arch}.tar.gz" \
               --clobber
           done
-          # Append darwin checksums to the main checksums file
           gh release download "${GITHUB_REF_NAME}" \
-            -p "engx-${VERSION}-checksums.txt" -O dist/main-checksums.txt || true
-          cat dist/main-checksums.txt dist/engx-${VERSION}-darwin-checksums.txt \
-            > dist/merged-checksums.txt
+            -p "engx-${VERSION}-checksums.txt" \
+            -D dist/ || true
+          existing="dist/engx-${VERSION}-checksums.txt"
+          darwin="dist/engx-${VERSION}-darwin-checksums.txt"
+          merged="dist/merged-checksums.txt"
+          if [ -f "$existing" ]; then
+            cat "$existing" "$darwin" > "$merged"
+          else
+            cp "$darwin" "$merged"
+          fi
           gh release upload "${GITHUB_REF_NAME}" \
             "dist/merged-checksums.txt#engx-${VERSION}-checksums.txt" \
             --clobber
