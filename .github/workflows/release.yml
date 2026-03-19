@@ -57,7 +57,7 @@ jobs:
   # ── macOS arm64 build (native runner for CGO cross-compile) ────────────────
   build-darwin:
     runs-on: macos-latest
-    needs: []   # runs in parallel with goreleaser
+    needs: goreleaser   # must wait for goreleaser to create the release first
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -121,8 +121,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Wait for goreleaser job to create the release first
-          sleep 30
           for arch in arm64 amd64; do
             gh release upload "${GITHUB_REF_NAME}" \
               "dist/engx-${VERSION}-darwin-${arch}.tar.gz" \
