@@ -81,7 +81,7 @@ func run(logger *log.Logger) error {
 
 	// ── 1b. BOOTSTRAP ~/.nexus/ DIRECTORY STRUCTURE ──────────────────────────
 	if err := bootstrapNexusHome(logger); err != nil {
-		logger.Printf("WARNING: bootstrap failed: %v", err)
+		return fmt.Errorf("bootstrap ~/.nexus/: %w — fix directory permissions and retry", err)
 	}
 
 	// ── 1c. TOKEN FILE PERMISSION CHECK (audit fix) ───────────────────────────
@@ -191,59 +191,23 @@ func run(logger *log.Logger) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 7)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logger.Printf("reconciler started (interval=%s)", engine.Interval())
-		if err := engine.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("reconciler: %w", err)
-		}
-	}()
+	logger.Printf("reconciler started (interval=%s)", engine.Interval())
+	safeRun(ctx, "reconciler", &wg, errCh, engine.Run)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logger.Printf("health controller started (interval=%s)", healthCtrl.Interval())
-		if err := healthCtrl.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("health controller: %w", err)
-		}
-	}()
+	logger.Printf("health controller started (interval=%s)", healthCtrl.Interval())
+	safeRun(ctx, "health controller", &wg, errCh, healthCtrl.Run)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logger.Println("recovery controller started")
-		if err := recoveryCtrl.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("recovery controller: %w", err)
-		}
-	}()
+	logger.Println("recovery controller started")
+	safeRun(ctx, "recovery controller", &wg, errCh, recoveryCtrl.Run)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logger.Printf("socket server started: %s", socketPath)
-		if err := server.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("socket server: %w", err)
-		}
-	}()
+	logger.Printf("socket server started: %s", socketPath)
+	safeRun(ctx, "socket server", &wg, errCh, server.Run)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logger.Printf("HTTP API started: %s", httpAddr)
-		if err := apiServer.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("http api: %w", err)
-		}
-	}()
+	logger.Printf("HTTP API started: %s", httpAddr)
+	safeRun(ctx, "http api", &wg, errCh, apiServer.Run)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logger.Printf("watcher started — drop=%s workspace=%s", dropDir, workspaceRoot)
-		if err := w.Run(ctx); err != nil && ctx.Err() == nil {
-			errCh <- fmt.Errorf("watcher: %w", err)
-		}
-	}()
+	logger.Printf("watcher started — drop=%s workspace=%s", dropDir, workspaceRoot)
+	safeRun(ctx, "watcher", &wg, errCh, w.Run)
 
 	wg.Add(1)
 	go func() {
@@ -314,6 +278,29 @@ func checkTokenFilePerms(tokenPath string, logger *log.Logger) {
 		logger.Printf("WARNING: token file has unsafe permissions (%04o): %s", mode, tokenPath)
 		logger.Printf("  Fix: chmod 600 %s", tokenPath)
 	}
+}
+
+// safeRun launches fn(ctx) in a goroutine tracked by wg.
+// Catches panics and converts them to clean shutdown via errCh.
+func safeRun(
+	ctx context.Context,
+	name string,
+	wg *sync.WaitGroup,
+	errCh chan<- error,
+	fn func(context.Context) error,
+) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				errCh <- fmt.Errorf("%s: panic: %v", name, r)
+			}
+		}()
+		if err := fn(ctx); err != nil && ctx.Err() == nil {
+			errCh <- fmt.Errorf("%s: %w", name, err)
+		}
+	}()
 }
 
 func logResults(

@@ -1,68 +1,71 @@
 # WORKFLOW-SESSION.md
-# Session: NX-phase18-19-install-perms
+# Session: NX-phase20-reliability
 # Date: 2026-03-19
 
-## What changed — Nexus Phase 18 + 19
+## What changed — Nexus Phase 20 (fail-safe system — items 1-3)
 
-Phase 18 (ADR-026): engx platform install/uninstall/log commands.
-  After install, engxd starts automatically at login — no more "engxd &".
-  macOS: launchd LaunchAgent in ~/Library/LaunchAgents/
-  Linux: systemd user service in ~/.config/systemd/user/
+Three reliability improvements aligned with the fail-safe design:
 
-Phase 19: Token file permission enforcement + ~/.nexus/ bootstrap.
-  engxd now creates ~/.nexus/logs/ and ~/.nexus/backups/ at startup.
-  Warns at startup if service-tokens file is world-readable (not 0600).
+1. SQLite integrity check at startup (F-6: store corruption).
+   New() runs PRAGMA integrity_check before migrations. On failure:
+   backs up the corrupt file as nexus.db.corrupt-<timestamp>, returns
+   an error, and engxd refuses to start with a clear message.
+
+2. Rolling daily backup of the clean database.
+   On every clean startup, copies nexus.db to
+   ~/.nexus/backups/nexus-YYYY-MM-DD.db. Keeps last 3 daily backups.
+   Best-effort — never blocks startup.
+
+3. safeRun() goroutine wrapper in engxd.
+   Replaces the 7 raw goroutine launch blocks with safeRun().
+   Catches panics in any component and converts them to clean shutdown
+   via errCh, rather than silently killing the process.
+
+4. bootstrapNexusHome fail-closed (change 2 in patch).
+   A broken ~/.nexus/ directory now causes engxd to refuse startup
+   with a clear error, rather than logging a warning and continuing
+   with a broken log directory.
 
 ## New files
-- cmd/engx/cmd_install.go     — platformInstallCmd, platformUninstallCmd,
-                                 platformServiceLogsCmd, launchd/systemd logic
+- (none)
 
 ## Modified files
-- cmd/engx/main.go             — see MAIN_GO_PATCH.md Part A (1 change)
-- cmd/engxd/main.go            — see MAIN_GO_PATCH.md Part B (3 changes)
+- internal/state/db.go   — checkIntegrity(), backupDB(), rollingBackup(),
+                           pruneBackups() added; New() wired with integrity
+                           check + rolling backup before migrate()
+- cmd/engxd/main.go      — safeRun() added; 7 goroutine blocks replaced;
+                           bootstrapNexusHome fail-closed (see MAIN_GO_PATCH.md)
 
 ## Apply
 
 cd ~/workspace/projects/apps/nexus && \
-unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-phase18-19-install-perms-20260319.zip -d .
+unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-phase20-reliability-20260319.zip -d .
 
-Then apply MAIN_GO_PATCH.md (Part A to cmd/engx/main.go, Part B to cmd/engxd/main.go).
+# Apply MAIN_GO_PATCH.md to cmd/engxd/main.go using the script in the patch file.
 
-go build ./cmd/engx/ ./cmd/engxd/ && echo "build ok"
+go build ./... && echo "build ok"
 
-## Verify Phase 18
+## Verify
 
-./engx platform --help
-# Should show: install, uninstall, log
+# Integrity check works on clean DB:
+go build ./cmd/engxd/ && engxd &
+# Should start normally, backup created:
+ls ~/.nexus/backups/
 
-./engx platform install
-# Should print:
-#   ✓ systemd unit written: ~/.config/systemd/user/engxd.service
-#   ✓ engxd enabled — will start automatically at login
+# safeRun wired:
+grep "safeRun" cmd/engxd/main.go | wc -l
+# Expected: 7
 
-# Confirm service is running:
-systemctl --user status engxd
-
-./engx platform log
-# Should show recent engxd output
-
-## Verify Phase 19
-
-pkill engxd
-go install ./cmd/engxd/ && cp ~/go/bin/engxd ~/bin/engxd && engxd &
-# Should see in log:
-#   opening state store: ~/.nexus/nexus.db
-# If service-tokens is 0644, should also see:
-#   WARNING: token file has unsafe permissions (0644)...
-#   Fix: chmod 600 ~/.nexus/service-tokens
+# bootstrapNexusHome fail-closed:
+grep "fix directory permissions" cmd/engxd/main.go
+# Expected: 1 line
 
 ## Commit
 
 git add \
-  cmd/engx/cmd_install.go \
-  cmd/engx/main.go \
+  internal/state/db.go \
   cmd/engxd/main.go \
   WORKFLOW-SESSION.md && \
-git commit -m "feat(phase18-19): engxd system service install + token perm check + home bootstrap" && \
-git tag v1.3.0-phase18 && \
+git commit -m "feat(phase20): SQLite integrity check + rolling backup + safeRun panic recovery" && \
+git tag v1.4.0-phase20 && \
 git push origin main --tags

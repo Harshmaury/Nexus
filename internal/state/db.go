@@ -25,6 +25,8 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -181,6 +183,18 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	store := &Store{db: db}
+
+	// Integrity check before any writes — refuse to start on corruption.
+	if err := checkIntegrity(db); err != nil {
+		corruptPath := dbPath + ".corrupt-" + time.Now().UTC().Format("20060102-150405")
+		_ = backupDB(dbPath, corruptPath)
+		return nil, fmt.Errorf(
+			"database integrity check failed: %w\n  corrupt file backed up to: %s\n  delete %s and restart to rebuild",
+			err, corruptPath, dbPath)
+	}
+
+	// Rolling backup — keep last 3 daily copies of the clean database.
+	_ = rollingBackup(dbPath)
 
 	if err := store.migrate(); err != nil {
 		return nil, fmt.Errorf("run migrations: %w", err)
@@ -699,6 +713,72 @@ var allMigrations = []schemaVersion{
 	{5, `ALTER TABLE events ADD COLUMN outcome   TEXT NOT NULL DEFAULT ''`},
 	{5, `CREATE INDEX IF NOT EXISTS idx_events_component ON events(component)`},
 	{5, `CREATE INDEX IF NOT EXISTS idx_events_outcome   ON events(outcome)`},
+}
+
+// checkIntegrity runs PRAGMA integrity_check on the open database.
+// Returns a non-nil error if the database is corrupt or the check fails.
+// Called in New() before migrations — a corrupt DB never gets silently used.
+func checkIntegrity(db *sql.DB) error {
+	var result string
+	if err := db.QueryRow("PRAGMA integrity_check").Scan(&result); err != nil {
+		return fmt.Errorf("integrity check query failed: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("database corrupt: %s", result)
+	}
+	return nil
+}
+
+// backupDB copies src to dst via a temp file + atomic rename.
+func backupDB(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read source: %w", err)
+	}
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	return os.Rename(tmp, dst)
+}
+
+// rollingBackup copies the database to ~/.nexus/backups/nexus-YYYYMMDD.db,
+// keeping at most 3 daily backups. Best-effort — never blocks startup.
+func rollingBackup(dbPath string) error {
+	backupDir := filepath.Join(filepath.Dir(dbPath), "backups")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return fmt.Errorf("create backup dir: %w", err)
+	}
+	dst := filepath.Join(backupDir,
+		"nexus-"+time.Now().UTC().Format("2006-01-02")+".db")
+	if _, err := os.Stat(dst); err == nil {
+		return nil // already backed up today
+	}
+	if err := backupDB(dbPath, dst); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	return pruneBackups(backupDir, 3)
+}
+
+// pruneBackups removes the oldest files in dir, keeping the last n.
+func pruneBackups(dir string, keep int) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read backup dir: %w", err)
+	}
+	var backups []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			backups = append(backups, filepath.Join(dir, e.Name()))
+		}
+	}
+	for len(backups) > keep {
+		if err := os.Remove(backups[0]); err != nil {
+			return fmt.Errorf("remove old backup: %w", err)
+		}
+		backups = backups[1:]
+	}
+	return nil
 }
 
 func (s *Store) migrate() error {
