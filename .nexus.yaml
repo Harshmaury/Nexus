@@ -1,8 +1,0 @@
-name: nexus
-id: nexus
-type: platform-daemon
-language: go
-runtime:
-  provider: process
-  command: /tmp/bin/engxd
-  dir: /home/harsh/workspace/projects/apps/nexus
