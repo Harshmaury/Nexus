@@ -1,0 +1,186 @@
+# .goreleaser.yaml
+# Nexus Developer Platform — release pipeline (ADR-030)
+#
+# Triggered by: git push origin main --tags  (tag pattern v*)
+# Produces:     engx-<version>-<os>-<arch>.tar.gz  for 5 platforms
+#               engx-<version>-checksums.txt        SHA256 manifest
+#               GitHub Release with changelog
+#
+# Tarball layout (consumed by engx upgrade and scripts/install.sh):
+#   bin/engxd
+#   bin/engx
+#   bin/engxa
+#   LICENSE
+#   README.md
+#
+# Naming contract with internal/upgrade/release.go (ADR-028):
+#   GOOS=linux   GOARCH=amd64  → engx-<ver>-linux-amd64.tar.gz
+#   GOOS=linux   GOARCH=arm64  → engx-<ver>-linux-arm64.tar.gz
+#   GOOS=darwin  GOARCH=amd64  → engx-<ver>-darwin-amd64.tar.gz
+#   GOOS=darwin  GOARCH=arm64  → engx-<ver>-darwin-arm64.tar.gz
+#   GOOS=windows GOARCH=amd64  → engx-<ver>-windows-amd64.zip  (manual install only)
+#
+# CGO cross-compile:
+#   linux/arm64 engxd requires: sudo apt install gcc-aarch64-linux-gnu
+#   darwin builds run on macos-latest runner in build-darwin Actions job
+
+version: 2
+
+project_name: engx
+
+# ── Build ────────────────────────────────────────────────────────────────────
+builds:
+  - id: engxd
+    binary: bin/engxd
+    main: ./cmd/engxd
+    env:
+      - CGO_ENABLED=1
+      # aarch64 cross-compiler for linux/arm64 CGO (apt install gcc-aarch64-linux-gnu)
+      - >-
+        {{- if and (eq .Os "linux") (eq .Arch "arm64") }}CC=aarch64-linux-gnu-gcc{{- end }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64   # darwin built natively on macos-latest (build-darwin job)
+      - goos: darwin
+        goarch: arm64   # darwin built natively on macos-latest (build-darwin job)
+    ldflags:
+      - -s -w -X main.daemonVersion={{.Version}}
+    flags:
+      - -trimpath
+
+  - id: engx
+    binary: bin/engx
+    main: ./cmd/engx
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64   # darwin built natively on macos-latest
+      - goos: darwin
+        goarch: arm64   # darwin built natively on macos-latest
+    ldflags:
+      - -s -w -X main.cliVersion={{.Version}}
+    flags:
+      - -trimpath
+
+  - id: engxa
+    binary: bin/engxa
+    main: ./cmd/engxa
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64   # darwin built natively on macos-latest
+      - goos: darwin
+        goarch: arm64   # darwin built natively on macos-latest
+    ldflags:
+      - -s -w
+    flags:
+      - -trimpath
+
+# ── Archives ─────────────────────────────────────────────────────────────────
+# Note: using 'builds' and 'format' for compatibility with goreleaser snap release.
+# Separate archive blocks per format replace the deprecated 'format_overrides'.
+archives:
+  - id: unix
+    builds:
+      - engxd
+      - engx
+      - engxa
+    # Naming must match internal/upgrade/release.go buildRelease():
+    #   engx-<version>-<GOOS>-<GOARCH>.tar.gz
+    name_template: "engx-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+    wrap_in_directory: false
+
+  - id: windows
+    builds:
+      - engx
+      - engxa
+    name_template: "engx-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    format: zip
+    files:
+      - LICENSE
+      - README.md
+    wrap_in_directory: false
+
+# ── Checksums ────────────────────────────────────────────────────────────────
+checksum:
+  # Must match internal/upgrade/verifier.go fetchExpectedHash():
+  #   engx-<version>-checksums.txt  with lines: "<sha256>  <filename>"
+  name_template: "engx-{{ .Version }}-checksums.txt"
+  algorithm: sha256
+
+# ── Changelog ────────────────────────────────────────────────────────────────
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^fix"
+      order: 1
+    - title: Other
+      order: 999
+
+# ── GitHub Release ────────────────────────────────────────────────────────────
+release:
+  github:
+    owner: Harshmaury
+    name: Nexus
+  name_template: "engx {{ .Tag }}"
+  prerelease: auto   # tags with -rc, -beta, -alpha → pre-release automatically
+  draft: false
+  header: |
+    ## engx {{ .Tag }}
+
+    Install or upgrade with one command:
+    ```bash
+    curl -fsSL https://get.engx.dev/install.sh | bash
+    ```
+    Or upgrade an existing install:
+    ```bash
+    engx upgrade
+    ```
+  footer: |
+    **Full changelog:** https://github.com/Harshmaury/Nexus/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+# ── Snapshot (local dev builds — not published) ───────────────────────────────
+snapshot:
+  version_template: "{{ .Version }}-dev"

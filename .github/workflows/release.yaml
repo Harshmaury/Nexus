@@ -1,0 +1,57 @@
+# @nexus-project: nexus
+# @nexus-path: .github/workflows/release.yaml
+# Release pipeline for the Nexus developer platform.
+# Triggers on any v* tag push (e.g. git tag v1.5.0-phase21 && git push origin --tags).
+#
+# Steps:
+#   1. Checkout code
+#   2. Set up Go 1.25
+#   3. Install C compiler (required for engxd — CGO + go-sqlite3)
+#   4. Install cosign for artifact signing
+#   5. Run goreleaser — builds, archives, checksums, signs, publishes
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write      # create GitHub Release + upload assets
+  id-token: write      # cosign keyless signing via OIDC
+
+jobs:
+  release:
+    name: goreleaser
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history required for changelog generation
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Install C compiler (required for go-sqlite3 / CGO)
+        run: sudo apt-get update && sudo apt-get install -y gcc
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # COSIGN_EXPERIMENTAL=1 enables keyless signing via GitHub OIDC.
+          # Signatures are verified against Sigstore's transparency log (Rekor).
+          COSIGN_EXPERIMENTAL: "1"

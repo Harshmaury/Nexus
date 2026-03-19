@@ -1,0 +1,138 @@
+# .github/workflows/release.yml
+# Nexus Developer Platform — release workflow (ADR-030)
+#
+# Triggers on every v* tag push.
+# Runs goreleaser to build, package, checksum, and publish to GitHub Releases.
+#
+# Required repository secrets:
+#   GITHUB_TOKEN  — automatically provided by Actions (needs write:packages + contents:write)
+#
+# Required repository variables (set under Settings → Variables):
+#   none — all config is in .goreleaser.yaml
+#
+# CGO note:
+#   engxd requires CGO (go-sqlite3). Linux builds use the ubuntu-latest runner
+#   which has gcc available. Darwin arm64 cross-compilation from Linux requires
+#   osxcross and is excluded from the goreleaser build matrix (darwin/amd64 only
+#   via native runner on macos-latest in a separate job — see job: build-darwin).
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to create GitHub Releases and upload assets
+  packages: write   # future: GHCR image if added
+
+jobs:
+  # ── Linux + Windows builds (goreleaser) ────────────────────────────────────
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # goreleaser needs full history for changelog
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gcc (required for CGO / go-sqlite3)
+        run: sudo apt-get install -y gcc
+
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── macOS arm64 build (native runner for CGO cross-compile) ────────────────
+  build-darwin:
+    runs-on: macos-latest
+    needs: []   # runs in parallel with goreleaser
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build darwin binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CGO_ENABLED: "1"
+        run: |
+          mkdir -p dist/darwin-arm64/bin dist/darwin-amd64/bin
+
+          # arm64
+          GOARCH=arm64 go build -trimpath \
+            -ldflags "-s -w -X main.daemonVersion=${VERSION}" \
+            -o dist/darwin-arm64/bin/engxd ./cmd/engxd
+
+          GOARCH=arm64 CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.cliVersion=${VERSION}" \
+            -o dist/darwin-arm64/bin/engx ./cmd/engx
+
+          GOARCH=arm64 CGO_ENABLED=0 go build -trimpath \
+            -o dist/darwin-arm64/bin/engxa ./cmd/engxa
+
+          # amd64
+          GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.daemonVersion=${VERSION}" \
+            -o dist/darwin-amd64/bin/engxd ./cmd/engxd
+
+          GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.cliVersion=${VERSION}" \
+            -o dist/darwin-amd64/bin/engx ./cmd/engx
+
+          GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
+            -o dist/darwin-amd64/bin/engxa ./cmd/engxa
+
+      - name: Package and checksum darwin tarballs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for arch in arm64 amd64; do
+            tarball="engx-${VERSION}-darwin-${arch}.tar.gz"
+            cp LICENSE README.md dist/darwin-${arch}/
+            tar -czf "dist/${tarball}" -C dist/darwin-${arch} bin LICENSE README.md
+            sha256sum "dist/${tarball}" >> "dist/engx-${VERSION}-darwin-checksums.txt"
+          done
+
+      - name: Upload darwin assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Wait for goreleaser job to create the release first
+          sleep 30
+          for arch in arm64 amd64; do
+            gh release upload "${GITHUB_REF_NAME}" \
+              "dist/engx-${VERSION}-darwin-${arch}.tar.gz" \
+              --clobber
+          done
+          # Append darwin checksums to the main checksums file
+          gh release download "${GITHUB_REF_NAME}" \
+            -p "engx-${VERSION}-checksums.txt" -O dist/main-checksums.txt || true
+          cat dist/main-checksums.txt dist/engx-${VERSION}-darwin-checksums.txt \
+            > dist/merged-checksums.txt
+          gh release upload "${GITHUB_REF_NAME}" \
+            "dist/merged-checksums.txt#engx-${VERSION}-checksums.txt" \
+            --clobber
