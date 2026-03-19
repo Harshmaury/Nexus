@@ -18,7 +18,7 @@ import (
 const DefaultDBPath = "~/.nexus/nexus.db"
 // DefaultHTTPAddr is the default listen address for the Phase 8 HTTP API.
 // Override with the NEXUS_HTTP_ADDR environment variable.
-const DefaultHTTPAddr = ":8080"
+const DefaultHTTPAddr = "127.0.0.1:8080"
 
 
 // EnvOrDefault returns the value of the environment variable key,
