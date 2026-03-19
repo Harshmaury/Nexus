@@ -168,6 +168,7 @@ func run(logger *log.Logger) error {
 		Logger:        logger,
 		ServiceTokens: serviceTokens, // ADR-008
 		SSEBroker:     sseBroker,     // Phase 16: ADR-015
+		DaemonVersion: daemonVersion, // Phase 22: binary version cross-check
 	})
 
 	// ── 9. WATCHER (drop folder + workspace — ADR-002) ────────────────────────

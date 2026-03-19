@@ -1,71 +1,91 @@
 # WORKFLOW-SESSION.md
-# Session: NX-phase20-reliability
+# Session: NX-phase22-doctor-extended
 # Date: 2026-03-19
 
-## What changed — Nexus Phase 20 (fail-safe system — items 1-3)
+## What changed — Nexus Phase 21+22: engx upgrade (ADR-028) + doctor extended (ADR-029)
 
-Three reliability improvements aligned with the fail-safe design:
+Phase 21: adds `engx upgrade` — self-update command that downloads the latest
+GitHub release, verifies SHA256, runs doctor preflight, then atomically swaps
+engxd/engx/engxa in ~/bin/. No new dependencies (stdlib only).
 
-1. SQLite integrity check at startup (F-6: store corruption).
-   New() runs PRAGMA integrity_check before migrations. On failure:
-   backs up the corrupt file as nexus.db.corrupt-<timestamp>, returns
-   an error, and engxd refuses to start with a clear message.
-
-2. Rolling daily backup of the clean database.
-   On every clean startup, copies nexus.db to
-   ~/.nexus/backups/nexus-YYYY-MM-DD.db. Keeps last 3 daily backups.
-   Best-effort — never blocks startup.
-
-3. safeRun() goroutine wrapper in engxd.
-   Replaces the 7 raw goroutine launch blocks with safeRun().
-   Catches panics in any component and converts them to clean shutdown
-   via errCh, rather than silently killing the process.
-
-4. bootstrapNexusHome fail-closed (change 2 in patch).
-   A broken ~/.nexus/ directory now causes engxd to refuse startup
-   with a clear error, rather than logging a warning and continuing
-   with a broken log directory.
+Phase 22: extends `engx doctor` with five local filesystem checks: SQLite
+integrity, port conflicts, binary version cross-check (CLI vs daemon), ~/.nexus/
+permissions, and service-tokens age warning. GET /health now returns
+daemon_version for the version cross-check. Doctor is now a genuine preflight
+safety gate for engx upgrade.
 
 ## New files
-- (none)
+
+- `architecture/decisions/ADR-029-doctor-extended-checks.md` — extended doctor rules
+- `cmd/engx/cmd_doctor_fs.go`    — five local FS checks (collectFS, printFS)
+- `cmd/engx/cmd_upgrade.go`      — engx upgrade command (ADR-028)
+- `internal/upgrade/release.go`  — GitHub Releases API resolution
+- `internal/upgrade/verifier.go` — SHA256 checksum verification
+- `internal/upgrade/installer.go`— download, extract, preflight, atomic swap
+- `internal/upgrade/platform.go` — OS/arch detection
 
 ## Modified files
-- internal/state/db.go   — checkIntegrity(), backupDB(), rollingBackup(),
-                           pruneBackups() added; New() wired with integrity
-                           check + rolling backup before migrate()
-- cmd/engxd/main.go      — safeRun() added; 7 goroutine blocks replaced;
-                           bootstrapNexusHome fail-closed (see MAIN_GO_PATCH.md)
+
+- `cmd/engx/main.go`        — upgradeCmd wired; doctorReport.fsChecks added;
+                              collectFS + printFS wired; cliVersion → 1.5.0
+- `cmd/engxd/main.go`       — DaemonVersion passed into api.ServerConfig
+- `internal/api/server.go`  — ServerConfig.DaemonVersion; makeHealthHandler
+                              replaces handleHealth; daemon_version in /health
+- `nexus.yaml`              — version: 1.5.0-phase22
 
 ## Apply
 
+```bash
 cd ~/workspace/projects/apps/nexus && \
-unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-phase20-reliability-20260319.zip -d .
-
-# Apply MAIN_GO_PATCH.md to cmd/engxd/main.go using the script in the patch file.
-
-go build ./... && echo "build ok"
+unzip -o /mnt/c/Users/harsh/Downloads/engx-drop/nexus-phase22-doctor-extended-20260319-HHMM.zip -d . && \
+go build ./...
+```
 
 ## Verify
 
-# Integrity check works on clean DB:
-go build ./cmd/engxd/ && engxd &
-# Should start normally, backup created:
-ls ~/.nexus/backups/
+```bash
+# Build check
+go build ./...
 
-# safeRun wired:
-grep "safeRun" cmd/engxd/main.go | wc -l
-# Expected: 7
+# Doctor shows new FS checks section
+go run ./cmd/engx doctor
 
-# bootstrapNexusHome fail-closed:
-grep "fix directory permissions" cmd/engxd/main.go
-# Expected: 1 line
+# Expected new lines in output:
+#   ✓ db-integrity
+#   ✓ port-conflicts
+#   ✓ binary-versions      engx=1.5.0 engxd=1.5.0   (or "daemon unreachable — skipped")
+#   ✓ nexus-perms
+#   ✓ token-age            N days old
+
+# Upgrade dry-run (requires live internet to GitHub)
+go run ./cmd/engx upgrade --dry-run
+
+# Version output
+go run ./cmd/engx version
+# engx version 1.5.0
+
+# Health endpoint now includes daemon_version
+curl -s http://127.0.0.1:8080/health | jq
+# { "ok": true, "status": "healthy", "daemon_version": "0.1.0" }
+```
 
 ## Commit
 
+```bash
 git add \
-  internal/state/db.go \
+  architecture/decisions/ADR-029-doctor-extended-checks.md \
+  cmd/engx/cmd_doctor_fs.go \
+  cmd/engx/cmd_upgrade.go \
+  cmd/engx/main.go \
   cmd/engxd/main.go \
+  internal/api/server.go \
+  internal/upgrade/release.go \
+  internal/upgrade/verifier.go \
+  internal/upgrade/installer.go \
+  internal/upgrade/platform.go \
+  nexus.yaml \
   WORKFLOW-SESSION.md && \
-git commit -m "feat(phase20): SQLite integrity check + rolling backup + safeRun panic recovery" && \
-git tag v1.4.0-phase20 && \
+git commit -m "feat(phase21+22): engx upgrade (ADR-028) + doctor extended checks (ADR-029)" && \
+git tag v1.5.0-phase22 && \
 git push origin main --tags
+```

@@ -23,7 +23,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const cliVersion = "0.5.0"
+const cliVersion = "1.5.0"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -75,6 +75,7 @@ func rootCmd() *cobra.Command {
 		execCmd(&httpAddr),
 		ciCmd(&httpAddr),
 		eventsStreamCmd(&httpAddr),
+		upgradeCmd(&httpAddr),    // Phase 21: ADR-028
 	)
 
 	return root
@@ -933,6 +934,7 @@ type doctorReport struct {
 	guardian doctorGuardian
 	sentinel doctorSentinel
 	metrics  doctorMetrics
+	fsChecks []doctorFSCheck // Phase 22: local filesystem checks
 	errors   []string
 }
 
@@ -976,6 +978,7 @@ func (d *doctorReport) collect() {
 	fetchGuardian(d)
 	fetchSentinel(d)
 	fetchMetrics(d)
+	collectFS(d) // Phase 22: local filesystem + environment checks
 }
 
 func fetchServices(d *doctorReport) {
@@ -1072,6 +1075,7 @@ func (d *doctorReport) print() {
 	printGuardian(d)
 	printSentinel(d)
 	printForge(d)
+	printFS(d)        // Phase 22: filesystem checks
 	printFetchErrors(d)
 	fmt.Println()
 	printSuggestions(d)

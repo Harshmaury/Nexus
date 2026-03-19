@@ -38,6 +38,7 @@ type ServerConfig struct {
 	Logger        *log.Logger
 	ServiceTokens map[string]string
 	SSEBroker     *sse.Broker // Phase 16: nil = SSE disabled (ADR-015)
+	DaemonVersion string      // Phase 22: reported in GET /health for binary version check
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -92,7 +93,7 @@ func newRouter(cfg ServerConfig) http.Handler {
 	agentsH   := handler.NewAgentsHandler(cfg.Store)
 
 	// ── Core routes ──────────────────────────────────────────────────────────
-	mux.HandleFunc("GET  /health",               handleHealth)
+	mux.HandleFunc("GET  /health",               makeHealthHandler(cfg.DaemonVersion))
 	mux.HandleFunc("GET  /metrics",              metricsHandler(cfg.Metrics))
 	mux.HandleFunc("GET  /projects",             projectsH.List)
 	mux.HandleFunc("GET  /projects/{id}",        projectsH.Get)
@@ -125,10 +126,24 @@ func newRouter(cfg ServerConfig) http.Handler {
 	return h
 }
 
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"ok":true,"status":"healthy"}`)) //nolint:errcheck
+// makeHealthHandler returns an http.HandlerFunc that includes the daemon
+// version in the response so engx doctor can do binary version cross-checks.
+// Phase 22 (ADR-029): daemon_version field added.
+func makeHealthHandler(daemonVersion string) http.HandlerFunc {
+	type healthResponse struct {
+		OK            bool   `json:"ok"`
+		Status        string `json:"status"`
+		DaemonVersion string `json:"daemon_version,omitempty"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(healthResponse{
+			OK:            true,
+			Status:        "healthy",
+			DaemonVersion: daemonVersion,
+		})
+	}
 }
 
 func metricsHandler(m *telemetry.Metrics) http.HandlerFunc {
