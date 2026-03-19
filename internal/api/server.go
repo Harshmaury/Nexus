@@ -101,6 +101,7 @@ func newRouter(cfg ServerConfig) http.Handler {
 	mux.HandleFunc("POST /projects/register",    projectsH.Register)
 	mux.HandleFunc("GET  /services",             servicesH.List)
 	mux.HandleFunc("POST /services/register",    servicesH.Register)
+	mux.HandleFunc("POST /services/{id}/reset",  servicesH.Reset)
 	mux.HandleFunc("GET  /events",               eventsH.List)
 
 	// ── Phase 16: SSE streaming (ADR-015) ────────────────────────────────────

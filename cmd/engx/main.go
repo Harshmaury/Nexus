@@ -51,7 +51,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(
 		projectCmd(&socketPath),
 		registerCmd(&socketPath, &httpAddr),
-		servicesCmd(&socketPath),
+		servicesCmd(&socketPath, &httpAddr),
 		eventsCmd(&socketPath),
 		dropCmd(&socketPath),
 		watchCmd(&socketPath),
@@ -644,9 +644,9 @@ func renderStatus(s *controllers.ProjectStatus) string {
 	return sb.String()
 }
 
-func servicesCmd(socketPath *string) *cobra.Command {
-	return &cobra.Command{Use: "services", Short: "List services",
-		RunE: func(cmd *cobra.Command, args []string) error {
+func servicesCmd(socketPath, httpAddr *string) *cobra.Command {
+	cmd := &cobra.Command{Use: "services", Short: "List services",
+		RunE: func(c *cobra.Command, args []string) error {
 			resp, err := sendCommand(*socketPath, daemon.CmdServicesList, nil)
 			if err != nil {
 				return err
@@ -669,7 +669,38 @@ func servicesCmd(socketPath *string) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.AddCommand(serviceResetCmd(httpAddr))
+	return cmd
 }
+
+// serviceResetCmd handles engx services reset <id> (ADR-023).
+func serviceResetCmd(httpAddr *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset <service-id>",
+		Short: "Reset a service from maintenance or crash loop back to stopped",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := args[0]
+			resp, err := http.Post(
+				*httpAddr+"/services/"+id+"/reset",
+				"application/json", nil)
+			if err != nil {
+				return fmt.Errorf("cannot reach engxd: %w", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound {
+				return fmt.Errorf("service %q not found", id)
+			}
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("reset failed: HTTP %d", resp.StatusCode)
+			}
+			fmt.Printf("✓ %s reset to stopped\n", id)
+			return nil
+		},
+	}
+}
+
+
 
 func eventsCmd(socketPath *string) *cobra.Command {
 	var limit int
@@ -712,7 +743,7 @@ func platformCmd(socketPath, httpAddr *string) *cobra.Command {
 		Short: "Control the full platform (start/stop/status all services)",
 	}
 	cmd.AddCommand(
-		platformStartCmd(socketPath),
+		platformStartCmd(socketPath, httpAddr),
 		platformStopCmd(socketPath),
 		platformStatusCmd(socketPath, httpAddr),
 	)
@@ -726,15 +757,40 @@ var platformProjects = []string{
 	"metrics", "navigator", "guardian", "observer", "sentinel",
 }
 
-func platformStartCmd(socketPath *string) *cobra.Command {
+// platformServiceIDs maps project IDs to their default service ID.
+// Used by platform start to reset services before queuing (ADR-023).
+var platformServiceIDs = []string{
+	"atlas-daemon", "forge-daemon",
+	"metrics-daemon", "navigator-daemon", "guardian-daemon",
+	"observer-daemon", "sentinel-daemon",
+}
+
+func platformStartCmd(socketPath, httpAddr *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
 		Short: "Start all platform services",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// ADR-023: reset fail counts before queuing — clears maintenance
+			// state accumulated from previous session crash loops.
+			resetPlatformServices(*httpAddr, platformServiceIDs)
 			fmt.Println("Starting platform services...")
 			return forEachProject(*socketPath, platformProjects,
 				daemon.CmdProjectStart, "started", "already running")
 		},
+	}
+}
+
+// resetPlatformServices calls POST /services/:id/reset for each service.
+// Best-effort — 404s (service not yet registered) are silently ignored.
+func resetPlatformServices(httpAddr string, serviceIDs []string) {
+	for _, id := range serviceIDs {
+		resp, err := http.Post(
+			httpAddr+"/services/"+id+"/reset",
+			"application/json", nil)
+		if err != nil || resp == nil {
+			continue
+		}
+		resp.Body.Close()
 	}
 }
 
@@ -757,56 +813,53 @@ func platformStatusCmd(socketPath, httpAddr *string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := http.Get(*httpAddr + "/services")
 			if err != nil {
-				return fmt.Errorf("cannot reach engxd: %w", err)
+				return fmt.Errorf("cannot reach engxd at %s: %w", *httpAddr, err)
 			}
 			defer resp.Body.Close()
 			var result struct {
+				OK   bool `json:"ok"`
 				Data []struct {
+					ID           string `json:"id"`
 					Name         string `json:"name"`
+					Project      string `json:"project"`
 					DesiredState string `json:"desired_state"`
 					ActualState  string `json:"actual_state"`
+					FailCount    int    `json:"fail_count"`
 				} `json:"data"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-				return fmt.Errorf("decode: %w", err)
+				return fmt.Errorf("decode services: %w", err)
 			}
-			total, running := 0, 0
-			for _, s := range result.Data {
-				total++
-				if s.ActualState == "running" { running++ }
-			}
-			fmt.Printf("Platform: %d/%d services running\n", running, total)
-			for _, s := range result.Data {
-				ind := "●"
-				if s.ActualState != "running" { ind = "○" }
-				fmt.Printf("  %s %-20s desired=%-12s actual=%s\n", ind, s.Name, s.DesiredState, s.ActualState)
-			}
+			printPlatformStatus(result.Data)
 			return nil
 		},
 	}
 }
 
-func printPlatformStatus(statuses []*controllers.ProjectStatus) {
-	total, healthy := 0, 0
-	for _, proj := range statuses {
-		for _, svc := range proj.Services {
-			total++
-			if svc.IsHealthy {
-				healthy++
-			}
+// printPlatformStatus prints a compact health summary for all platform services.
+func printPlatformStatus(services []struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Project      string `json:"project"`
+	DesiredState string `json:"desired_state"`
+	ActualState  string `json:"actual_state"`
+	FailCount    int    `json:"fail_count"`
+}) {
+	total, running := 0, 0
+	for _, svc := range services {
+		total++
+		if svc.ActualState == "running" {
+			running++
 		}
 	}
-	fmt.Printf("Platform: %d/%d services healthy\n", healthy, total)
-	for _, proj := range statuses {
-		for _, svc := range proj.Services {
-			indicator := "●"
-			if !svc.IsHealthy {
-				indicator = "○"
-			}
-			fmt.Printf("  %s %-20s desired=%-10s actual=%s\n",
-				indicator, svc.Name,
-				string(svc.DesiredState), string(svc.ActualState))
+	fmt.Printf("Platform: %d/%d services running\n", running, total)
+	for _, svc := range services {
+		indicator := "●"
+		if svc.ActualState != "running" {
+			indicator = "○"
 		}
+		fmt.Printf("  %s %-20s desired=%-12s actual=%s\n",
+			indicator, svc.Name, svc.DesiredState, svc.ActualState)
 	}
 }
 
