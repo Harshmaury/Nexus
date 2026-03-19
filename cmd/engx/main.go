@@ -763,6 +763,9 @@ func platformCmd(socketPath, httpAddr *string) *cobra.Command {
 		platformStartCmd(socketPath, httpAddr),
 		platformStopCmd(socketPath),
 		platformStatusCmd(socketPath, httpAddr),
+		platformInstallCmd(),
+		platformUninstallCmd(),
+		platformServiceLogsCmd(),
 	)
 	return cmd
 }

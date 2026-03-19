@@ -35,6 +35,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 
@@ -77,6 +78,14 @@ func run(logger *log.Logger) error {
 	} else if len(serviceTokens) == 0 {
 		logger.Println("WARNING: ~/.nexus/service-tokens not found — inter-service auth disabled")
 	}
+
+	// ── 1b. BOOTSTRAP ~/.nexus/ DIRECTORY STRUCTURE ──────────────────────────
+	if err := bootstrapNexusHome(logger); err != nil {
+		logger.Printf("WARNING: bootstrap failed: %v", err)
+	}
+
+	// ── 1c. TOKEN FILE PERMISSION CHECK (audit fix) ───────────────────────────
+	checkTokenFilePerms(config.ExpandHome(config.ServiceTokensPath), logger)
 
 	// ── 2. STATE STORE ───────────────────────────────────────────────────────
 	dbPath := config.ExpandHome(config.EnvOrDefault("NEXUS_DB_PATH", config.DefaultDBPath))
@@ -273,6 +282,38 @@ func run(logger *log.Logger) error {
 	logger.Println("closing state store")
 	_ = store.Close()
 	return nil
+}
+
+// bootstrapNexusHome ensures the ~/.nexus/ directory structure exists.
+func bootstrapNexusHome(logger *log.Logger) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("home dir: %w", err)
+	}
+	dirs := []string{
+		filepath.Join(home, ".nexus"),
+		filepath.Join(home, ".nexus", "logs"),
+		filepath.Join(home, ".nexus", "backups"),
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// checkTokenFilePerms warns if service-tokens is world-readable.
+func checkTokenFilePerms(tokenPath string, logger *log.Logger) {
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		return
+	}
+	mode := info.Mode().Perm()
+	if mode&0o044 != 0 {
+		logger.Printf("WARNING: token file has unsafe permissions (%04o): %s", mode, tokenPath)
+		logger.Printf("  Fix: chmod 600 %s", tokenPath)
+	}
 }
 
 func logResults(
