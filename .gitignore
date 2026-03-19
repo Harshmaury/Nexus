@@ -27,3 +27,14 @@
 .DS_Store
 Thumbs.db
 \ndist/
+
+# compiled binaries at repo root (go build / goreleaser local output)
+engx
+engxd
+engxa
+
+# goreleaser build output
+dist/
+
+# delivery patch notes (not source)
+**/MAIN_GO_PATCH.md
