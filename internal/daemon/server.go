@@ -304,6 +304,29 @@ func (s *Server) dispatch(req Request) (json.RawMessage, error) {
 	case CmdDropTrain:
 		return s.handleDropTrain()
 
+	case CmdDeregisterProject:
+		var p DeregisterProjectParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return nil, fmt.Errorf("parse params: %w", err)
+		}
+		if p.ProjectID == "" {
+			return nil, fmt.Errorf("project_id required")
+		}
+		if _, err := s.projectCtrl.StopProject(p.ProjectID); err != nil {
+			return nil, fmt.Errorf("stop project before deregister: %w", err)
+		}
+		servicesRemoved, err := s.store.DeleteServicesByProject(p.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("delete services: %w", err)
+		}
+		if err := s.store.DeregisterProject(p.ProjectID); err != nil {
+			return nil, err
+		}
+		return jsonMarshal(map[string]any{
+			"project_id":       p.ProjectID,
+			"services_removed": servicesRemoved,
+		})
+
 	default:
 		return nil, fmt.Errorf("unknown command %q", req.Command)
 	}

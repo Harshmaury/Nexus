@@ -1,7 +1,7 @@
 // @nexus-project: nexus
 // @nexus-path: internal/state/storer.go
-// Phase 14 addition:
-//   RegisterAgent, HeartbeatAgent, GetAgent, GetAllAgents added to interface.
+// Storer is the read/write contract for the Nexus state database.
+// Wave 5: DeregisterProject + DeleteServicesByProject added (ADR-033).
 package state
 
 import "time"
@@ -17,6 +17,7 @@ type Storer interface {
 	GetAllServices() ([]*Service, error)
 	GetServicesByProject(project string) ([]*Service, error)
 	GetRunningServices() ([]*Service, error)
+	DeleteServicesByProject(projectID string) (int, error) // ADR-033
 
 	// ── State ────────────────────────────────────────────────
 	SetActualState(id string, s ServiceState) error
@@ -33,11 +34,9 @@ type Storer interface {
 	GetServicesReadyToRestart() ([]*Service, error)
 
 	// ── Events ───────────────────────────────────────────────
-	// Phase 15: AppendEvent accepts component (platform domain) and outcome.
 	AppendEvent(serviceID string, eventType EventType, source EventSource, traceID string, component string, outcome string, payload string) error
 	GetRecentEvents(limit int) ([]*Event, error)
 	GetEventsByTrace(traceID string) ([]*Event, error)
-	// GetEventsSince returns events with ID > sinceID for efficient polling.
 	GetEventsSince(sinceID int64, limit int) ([]*Event, error)
 
 	// ── Health ───────────────────────────────────────────────
@@ -47,6 +46,7 @@ type Storer interface {
 	RegisterProject(p *Project) error
 	GetProject(id string) (*Project, error)
 	GetAllProjects() ([]*Project, error)
+	DeregisterProject(id string) error // ADR-033
 
 	// ── Download log ─────────────────────────────────────────
 	LogDownload(d *DownloadLog) error
@@ -61,5 +61,5 @@ type Storer interface {
 	HeartbeatAgent(agentID string) error
 	GetAgent(id string) (*Agent, error)
 	GetAllAgents() ([]*Agent, error)
-	GetAgentToken(id string) (string, bool, error) // token, exists, err — NX-H-02
+	GetAgentToken(id string) (string, bool, error)
 }
