@@ -1,150 +1,78 @@
-# .goreleaser.yaml
-# Nexus Developer Platform — release pipeline (ADR-030)
-#
-# Triggered by: git push origin main --tags  (tag pattern v*)
-# Produces:     engx-<version>-<os>-<arch>.tar.gz  for 5 platforms
-#               engx-<version>-checksums.txt        SHA256 manifest
-#               GitHub Release with changelog
-#
-# Tarball layout (consumed by engx upgrade and scripts/install.sh):
-#   bin/engxd
-#   bin/engx
-#   bin/engxa
-#   LICENSE
-#   README.md
-#
-# Naming contract with internal/upgrade/release.go (ADR-028):
-#   GOOS=linux   GOARCH=amd64  → engx-<ver>-linux-amd64.tar.gz
-#   GOOS=linux   GOARCH=arm64  → engx-<ver>-linux-arm64.tar.gz
-#   GOOS=darwin  GOARCH=amd64  → engx-<ver>-darwin-amd64.tar.gz
-#   GOOS=darwin  GOARCH=arm64  → engx-<ver>-darwin-arm64.tar.gz
-#   GOOS=windows GOARCH=amd64  → engx-<ver>-windows-amd64.zip  (manual install only)
-#
-# CGO cross-compile:
-#   linux/arm64 engxd requires: sudo apt install gcc-aarch64-linux-gnu
-#   darwin builds run on macos-latest runner in build-darwin Actions job
-
+# .goreleaser.yaml — Wave 4 release pipeline (ADR-030)
+# Naming contract: engx-<version>-<os>-<arch>.tar.gz  ← DO NOT CHANGE
+# See: architecture/decisions/ADR-030-goreleaser-pipeline.md
 version: 2
 
 project_name: engx
 
-# ── Build ────────────────────────────────────────────────────────────────────
+before:
+  hooks:
+    - go mod tidy
+
+# ── LINUX + WINDOWS BUILDS ────────────────────────────────────────────────────
 builds:
-  - id: engxd
+  # engxd — CGO on (sqlite3), linux only
+  - id: engxd-linux
     binary: bin/engxd
-    main: ./cmd/engxd
+    main: ./cmd/engxd/
     env:
       - CGO_ENABLED=1
-      # aarch64 cross-compiler for linux/arm64 CGO (apt install gcc-aarch64-linux-gnu)
-      - >-
-        {{- if and (eq .Os "linux") (eq .Arch "arm64") }}CC=aarch64-linux-gnu-gcc{{- end }}
-    goos:
-      - linux
-      - darwin
-    goarch:
-      - amd64
-      - arm64
-    ignore:
-      - goos: darwin
-        goarch: amd64   # darwin built natively on macos-latest (build-darwin job)
-      - goos: darwin
-        goarch: arm64   # darwin built natively on macos-latest (build-darwin job)
+    goos: [linux]
+    goarch: [amd64, arm64]
     ldflags:
       - -s -w -X main.daemonVersion={{.Version}}
-    flags:
-      - -trimpath
 
-  - id: engx
+  # engx — CGO off, linux + windows
+  - id: engx-linux-windows
     binary: bin/engx
-    main: ./cmd/engx
+    main: ./cmd/engx/
     env:
       - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
+    goos: [linux, windows]
+    goarch: [amd64, arm64]
     ignore:
       - goos: windows
         goarch: arm64
-      - goos: darwin
-        goarch: amd64   # darwin built natively on macos-latest
-      - goos: darwin
-        goarch: arm64   # darwin built natively on macos-latest
     ldflags:
       - -s -w -X main.cliVersion={{.Version}}
-    flags:
-      - -trimpath
 
-  - id: engxa
+  # engxa — CGO off, linux + windows
+  - id: engxa-linux-windows
     binary: bin/engxa
-    main: ./cmd/engxa
+    main: ./cmd/engxa/
     env:
       - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
+    goos: [linux, windows]
+    goarch: [amd64, arm64]
     ignore:
       - goos: windows
         goarch: arm64
-      - goos: darwin
-        goarch: amd64   # darwin built natively on macos-latest
-      - goos: darwin
-        goarch: arm64   # darwin built natively on macos-latest
     ldflags:
       - -s -w
-    flags:
-      - -trimpath
 
-# ── Archives ─────────────────────────────────────────────────────────────────
-# Note: using 'builds' and 'format' for compatibility with goreleaser snap release.
-# Separate archive blocks per format replace the deprecated 'format_overrides'.
+# ── ARCHIVES ──────────────────────────────────────────────────────────────────
 archives:
-  - id: unix
-    builds:
-      - engxd
-      - engx
-      - engxa
-    # Naming must match internal/upgrade/release.go buildRelease():
-    #   engx-<version>-<GOOS>-<GOARCH>.tar.gz
+  - id: default
+    builds: [engxd-linux, engx-linux-windows, engxa-linux-windows]
+    # Naming contract — matched by internal/upgrade/release.go and scripts/install.sh
     name_template: "engx-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    wrap_in_directory: false
     format: tar.gz
-    # engxd is linux-only (CGO); engx+engxa cover linux+darwin.
-    # Binary count differs per platform by design — suppress the goreleaser guard.
-    allow_different_binary_count: true
+    format_overrides:
+      - goos: windows
+        format: zip
     files:
       - LICENSE
       - README.md
-    wrap_in_directory: false
 
-  - id: windows
-    builds:
-      - engx
-      - engxa
-    name_template: "engx-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
-    format: zip
-    files:
-      - LICENSE
-      - README.md
-    wrap_in_directory: false
-
-# ── Checksums ────────────────────────────────────────────────────────────────
+# ── CHECKSUMS ─────────────────────────────────────────────────────────────────
 checksum:
-  # Must match internal/upgrade/verifier.go fetchExpectedHash():
-  #   engx-<version>-checksums.txt  with lines: "<sha256>  <filename>"
   name_template: "engx-{{ .Version }}-checksums.txt"
   algorithm: sha256
 
-# ── Changelog ────────────────────────────────────────────────────────────────
+# ── CHANGELOG ─────────────────────────────────────────────────────────────────
 changelog:
   sort: asc
-  use: github
   filters:
     exclude:
       - "^docs:"
@@ -152,38 +80,11 @@ changelog:
       - "^chore:"
       - Merge pull request
       - Merge branch
-  groups:
-    - title: Features
-      regexp: "^feat"
-      order: 0
-    - title: Bug Fixes
-      regexp: "^fix"
-      order: 1
-    - title: Other
-      order: 999
 
-# ── GitHub Release ────────────────────────────────────────────────────────────
+# ── RELEASE ───────────────────────────────────────────────────────────────────
 release:
   github:
     owner: Harshmaury
     name: Nexus
-  name_template: "engx {{ .Tag }}"
-  prerelease: auto   # tags with -rc, -beta, -alpha → pre-release automatically
+  prerelease: auto   # tags with -rc/-beta/-alpha → pre-release
   draft: false
-  header: |
-    ## engx {{ .Tag }}
-
-    Install or upgrade with one command:
-    ```bash
-    curl -fsSL https://get.engx.dev/install.sh | bash
-    ```
-    Or upgrade an existing install:
-    ```bash
-    engx upgrade
-    ```
-  footer: |
-    **Full changelog:** https://github.com/Harshmaury/Nexus/compare/{{ .PreviousTag }}...{{ .Tag }}
-
-# ── Snapshot (local dev builds — not published) ───────────────────────────────
-snapshot:
-  version_template: "{{ .Version }}-dev"
