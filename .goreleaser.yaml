@@ -63,6 +63,7 @@ archives:
     # Naming contract — matched by internal/upgrade/release.go and scripts/install.sh
     name_template: "engx-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     wrap_in_directory: false
+    allow_different_binary_count: true
     format: tar.gz
     format_overrides:
       - goos: windows
