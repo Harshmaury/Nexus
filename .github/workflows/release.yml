@@ -112,12 +112,12 @@ jobs:
           # amd64
           tar -czf engx-${VERSION}-darwin-amd64.tar.gz \
             -C darwin bin/engxd bin/engx bin/engxa \
-            -C .. LICENSE README.md
+            -C "${GITHUB_WORKSPACE}" LICENSE README.md
 
           # arm64
           tar -czf engx-${VERSION}-darwin-arm64.tar.gz \
             -C darwin-arm64 bin/engxd bin/engx bin/engxa \
-            -C .. LICENSE README.md
+            -C "${GITHUB_WORKSPACE}" LICENSE README.md
 
           shasum -a 256 engx-${VERSION}-darwin-*.tar.gz > darwin-checksums.txt
           cat darwin-checksums.txt
