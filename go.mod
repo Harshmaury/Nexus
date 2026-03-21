@@ -3,7 +3,7 @@ module github.com/Harshmaury/Nexus
 go 1.25.0
 
 require (
-	github.com/Harshmaury/Canon v0.3.0
+	github.com/Harshmaury/Canon v0.4.1
 	github.com/Harshmaury/Herald v0.1.6-0.20260321163732-3ed099eda6cd
 	github.com/docker/docker v25.0.6+incompatible
 	github.com/docker/go-connections v0.6.0
