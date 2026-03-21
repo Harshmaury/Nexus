@@ -28,7 +28,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const cliVersion = "1.5.0"
+// cliVersion is overridden at build time by goreleaser via -ldflags "-X main.cliVersion=...".
+var cliVersion = "dev"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -101,16 +102,6 @@ func rootCmd() *cobra.Command {
 	} {
 		if cmd, _, err := root.Find([]string{name}); err == nil && cmd != nil {
 			cmd.Hidden = true
-		}
-	}
-
-	// ADR-040: progressive disclosure — hide internal commands from default help.
-	for _, name := range []string{
-		"events", "agents", "drop", "watch",
-		"sentinel", "workflow", "trigger", "guard", "on", "exec", "ci", "stream",
-	} {
-		if sub, _, err := root.Find([]string{name}); err == nil && sub != root {
-			sub.Hidden = true
 		}
 	}
 

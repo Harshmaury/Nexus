@@ -102,11 +102,9 @@ func newRouter(cfg ServerConfig) http.Handler {
 	mux.HandleFunc("POST /projects/{id}/stop",   projectsH.Stop)
 	mux.HandleFunc("POST /projects/register",    projectsH.Register)
 	mux.HandleFunc("DELETE /projects/{id}",      projectsH.Delete)
-	mux.HandleFunc("DELETE /projects/{id}",      projectsH.Delete)
 	mux.HandleFunc("GET  /services",             servicesH.List)
 	mux.HandleFunc("POST /services/register",    servicesH.Register)
 	mux.HandleFunc("POST /services/{id}/reset",  servicesH.Reset)
-	mux.HandleFunc("DELETE /services/{id}",      servicesH.Delete)
 	mux.HandleFunc("DELETE /services/{id}",      servicesH.Delete)
 	mux.HandleFunc("GET  /events",               eventsH.List)
 
