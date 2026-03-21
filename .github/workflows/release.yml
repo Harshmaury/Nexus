@@ -139,12 +139,16 @@ jobs:
           cat engx-${VERSION}-checksums.txt darwin-checksums.txt \
             > engx-${VERSION}-checksums-merged.txt
 
-          # Upload darwin tarballs + merged checksums to the existing release
+          # Upload darwin tarballs to the existing release
           gh release upload "v${VERSION}" \
             engx-${VERSION}-darwin-amd64.tar.gz \
             engx-${VERSION}-darwin-arm64.tar.gz \
             --clobber
 
+          # Copy merged file to canonical name then overwrite.
+          # gh release upload --clobber matches by filename, not alias,
+          # so the file#alias syntax does not replace the goreleaser asset.
+          cp engx-${VERSION}-checksums-merged.txt engx-${VERSION}-checksums.txt
           gh release upload "v${VERSION}" \
-            engx-${VERSION}-checksums-merged.txt#engx-${VERSION}-checksums.txt \
+            engx-${VERSION}-checksums.txt \
             --clobber
