@@ -37,10 +37,33 @@
   .install-box{display:inline-flex;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:16px;}
   .install-cmd{font-family:var(--mono);font-size:13px;color:var(--text);padding:14px 20px;letter-spacing:.02em;user-select:all;}
   .install-cmd .cmd-dim{color:var(--muted);}.install-cmd .cmd-url{color:var(--accent2);}
+  .os-tabs{display:flex;gap:2px;margin-bottom:16px;}
+  .os-tab{font-family:var(--mono);font-size:11px;letter-spacing:.06em;padding:7px 16px;border:1px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer;transition:all .2s;border-radius:3px;}
+  .os-tab:hover{color:var(--text);border-color:var(--muted);}
+  .os-tab.active{background:var(--dim);color:var(--text);border-color:var(--accent);}
+  .os-panel{display:none;}.os-panel.active{display:block;}
+  .win-steps{display:flex;flex-direction:column;gap:12px;margin-bottom:16px;}
+  .win-step{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:14px 18px;}
+  .win-step-label{font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;}
+  .win-step-cmd{font-family:var(--mono);font-size:12px;color:var(--text);}
+  .win-step-cmd .cmd-url{color:var(--accent2);}
+  .wsl-note{font-family:var(--mono);font-size:11px;color:var(--muted);padding:10px 14px;border:1px solid var(--dim);border-radius:4px;margin-bottom:16px;line-height:1.7;}
+  .wsl-note strong{color:var(--sub);font-weight:400;}
   .copy-btn{background:var(--dim);border:none;border-left:1px solid var(--border);color:var(--sub);font-family:var(--mono);font-size:11px;letter-spacing:.06em;padding:14px 18px;cursor:pointer;transition:background .2s,color .2s;}
   .copy-btn:hover{background:var(--accent);color:#fff;}
   .install-note{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.04em;}
   .install-note a{color:var(--sub);text-decoration:none;}.install-note a:hover{color:var(--accent);}
+  .os-tabs{display:flex;gap:2px;margin-bottom:16px;}
+  .os-tab{font-family:var(--mono);font-size:11px;letter-spacing:.06em;padding:7px 16px;border:1px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer;transition:all .2s;border-radius:3px;}
+  .os-tab:hover{color:var(--text);border-color:var(--muted);}
+  .os-tab.active{background:var(--dim);color:var(--text);border-color:var(--accent);}
+  .os-panel{display:none;}.os-panel.active{display:block;}
+  .win-steps{display:flex;flex-direction:column;gap:8px;margin-bottom:16px;}
+  .win-step{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:12px 16px;}
+  .win-step-label{font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;}
+  .win-step-cmd{font-family:var(--mono);font-size:12px;color:var(--text);line-height:1.7;}
+  .wsl-note{font-family:var(--mono);font-size:12px;color:var(--sub);padding:12px 16px;border:1px solid var(--dim);border-radius:4px;margin-bottom:12px;line-height:1.8;}
+  .wsl-note strong{color:var(--text);font-weight:400;}
   .stats{display:flex;gap:48px;padding:48px 40px;max-width:960px;margin:0 auto;border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
   .stat-item{display:flex;flex-direction:column;gap:4px;}
   .stat-num{font-size:32px;font-weight:800;letter-spacing:-.03em;}.stat-num span{color:var(--accent);}
@@ -126,11 +149,43 @@
   <div class="hero-tag">v2.0.0 — open source</div>
   <h1>Run your services.<br><span class="line2">See what they're</span><br><span class="accent">doing.</span></h1>
   <p class="hero-sub"><strong>engx</strong> is a local runtime platform for multi-service development.<br>One daemon. One CLI. No tab soup of terminals and log files.<br>Start services, watch them, recover them — from a single control plane.</p>
-  <div class="install-box">
-    <div class="install-cmd"><span class="cmd-dim">curl -fsSL </span><span class="cmd-url">https://harshmaury.github.io/Nexus/install.sh</span><span class="cmd-dim"> | bash</span></div>
-    <button class="copy-btn" onclick="copyInstall(this)">COPY</button>
+  <div class="os-tabs" id="osTabs">
+    <button class="os-tab" onclick="switchOS('mac')" id="tab-mac">macOS</button>
+    <button class="os-tab" onclick="switchOS('linux')" id="tab-linux">Linux</button>
+    <button class="os-tab" onclick="switchOS('windows')" id="tab-windows">Windows</button>
   </div>
-  <p class="install-note">macOS &amp; Linux · <a href="https://github.com/Harshmaury/Nexus/releases" target="_blank">View releases</a> · <a href="https://github.com/Harshmaury/Nexus" target="_blank">Source</a></p>
+  <div class="os-panel" id="panel-mac">
+    <div class="install-box">
+      <div class="install-cmd"><span class="cmd-dim">curl -fsSL </span><span class="cmd-url">https://harshmaury.github.io/Nexus/install.sh</span><span class="cmd-dim"> | bash</span></div>
+      <button class="copy-btn" onclick="copyCmd(this,'curl -fsSL https://harshmaury.github.io/Nexus/install.sh | bash')">COPY</button>
+    </div>
+    <p class="install-note">Installs engxd, engx, engxa to ~/bin/ &middot; macOS 12+ &middot; <a href="https://github.com/Harshmaury/Nexus/releases" target="_blank">View releases</a></p>
+  </div>
+  <div class="os-panel" id="panel-linux">
+    <div class="install-box">
+      <div class="install-cmd"><span class="cmd-dim">curl -fsSL </span><span class="cmd-url">https://harshmaury.github.io/Nexus/install.sh</span><span class="cmd-dim"> | bash</span></div>
+      <button class="copy-btn" onclick="copyCmd(this,'curl -fsSL https://harshmaury.github.io/Nexus/install.sh | bash')">COPY</button>
+    </div>
+    <p class="install-note">Installs engxd, engx, engxa to ~/bin/ &middot; Ubuntu 20.04+, Debian 11+ &middot; <a href="https://github.com/Harshmaury/Nexus/releases" target="_blank">View releases</a></p>
+  </div>
+  <div class="os-panel" id="panel-windows">
+    <div class="wsl-note"><strong>Recommended:</strong> Use WSL2 and run the Linux installer. WSL2 gives you the full platform including the daemon.<br>&rarr; <a href="https://learn.microsoft.com/en-us/windows/wsl/install" target="_blank" style="color:var(--accent)">Install WSL2</a>, then switch to the Linux tab above.</div>
+    <div class="win-steps">
+      <div class="win-step">
+        <div class="win-step-label">Option 2 &mdash; Native Windows (CLI only)</div>
+        <div class="win-step-cmd">1. Download <a href="https://github.com/Harshmaury/Nexus/releases/latest" target="_blank" style="color:var(--accent2);text-decoration:none">engx-windows-amd64.zip</a> from releases</div>
+      </div>
+      <div class="win-step">
+        <div class="win-step-label">Extract and add to PATH</div>
+        <div class="win-step-cmd">Extract the ZIP &rarr; copy <code>bin\engx.exe</code> to a folder in your PATH</div>
+      </div>
+      <div class="win-step">
+        <div class="win-step-label" style="color:var(--muted)">Note</div>
+        <div class="win-step-cmd" style="color:var(--muted)">engxd is not supported natively on Windows. WSL2 is required for the full platform.</div>
+      </div>
+    </div>
+    <p class="install-note"><a href="https://github.com/Harshmaury/Nexus/releases" target="_blank">All releases</a> &middot; <a href="https://learn.microsoft.com/en-us/windows/wsl/install" target="_blank">WSL2 install guide</a></p>
+  </div>
 </section>
 
 <div class="stats">
@@ -361,7 +416,9 @@
 </footer>
 
 <script>
-function copyInstall(btn){navigator.clipboard.writeText('curl -fsSL https://harshmaury.github.io/Nexus/install.sh | bash').then(()=>{const o=btn.textContent;btn.textContent='COPIED';btn.style.background='var(--accent2)';btn.style.color='#000';setTimeout(()=>{btn.textContent=o;btn.style.background='';btn.style.color='';},1800);});}
+function copyCmd(btn,cmd){navigator.clipboard.writeText(cmd).then(()=>{const o=btn.textContent;btn.textContent='COPIED';btn.style.background='var(--accent2)';btn.style.color='#000';setTimeout(()=>{btn.textContent=o;btn.style.background='';btn.style.color='';},1800);});}
+function switchOS(os){['mac','linux','windows'].forEach(o=>{document.getElementById('panel-'+o).classList.toggle('active',o===os);document.getElementById('tab-'+o).classList.toggle('active',o===os);});}
+(function(){const ua=navigator.userAgent.toLowerCase();let os='linux';if(ua.includes('mac'))os='mac';else if(ua.includes('win'))os='windows';switchOS(os);})();
 function toggleFaq(el){el.parentElement.classList.toggle('open');}
 </script>
 </body>
