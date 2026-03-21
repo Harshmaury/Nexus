@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -220,83 +219,6 @@ func traceShow(addr, traceID string) error {
 		fmt.Println("  No entries — trace may have expired (Observer ring buffer: 50 traces max).")
 	}
 	return nil
-}
-
-// ── RUN ───────────────────────────────────────────────────────────────────────
-
-func runCmd(socketPath, httpAddr *string) *cobra.Command {
-	var wait bool
-	var timeout int
-	cmd := &cobra.Command{
-		Use:   "run <project-id>",
-		Short: "Start a project and optionally wait until its services are running",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id := args[0]
-			resp, err := sendCommand(*socketPath, daemon.CmdProjectStart,
-				daemon.ProjectStartParams{ProjectID: id})
-			if err != nil {
-				return err
-			}
-			var r map[string]any
-			_ = json.Unmarshal(resp.Data, &r)
-			queued, _ := r["queued"].(float64)
-			if int(queued) == 0 {
-				fmt.Printf("✓ %s: already running\n", id)
-				return nil
-			}
-			fmt.Printf("✓ %s: queued %d service(s)\n", id, int(queued))
-			if !wait {
-				return nil
-			}
-			return waitForProject(*httpAddr, id, timeout)
-		},
-	}
-	cmd.Flags().BoolVarP(&wait, "wait", "w", false, "wait until all services are running")
-	cmd.Flags().IntVarP(&timeout, "timeout", "t", 60, "timeout in seconds when --wait is set")
-	return cmd
-}
-
-func waitForProject(httpAddr, id string, timeoutSecs int) error {
-	deadline := time.Now().Add(time.Duration(timeoutSecs) * time.Second)
-	fmt.Printf("Waiting for %s (timeout %ds)...\n", id, timeoutSecs)
-	for time.Now().Before(deadline) {
-		time.Sleep(3 * time.Second)
-		running, total, err := projectServiceStates(httpAddr, id)
-		if err != nil {
-			continue
-		}
-		fmt.Printf("  %d/%d running\n", running, total)
-		if running == total && total > 0 {
-			fmt.Printf("✓ %s: all services running\n", id)
-			return nil
-		}
-	}
-	return fmt.Errorf("timeout: %s not fully running after %ds", id, timeoutSecs)
-}
-
-func projectServiceStates(httpAddr, projectID string) (int, int, error) {
-	var result struct {
-		Data []struct {
-			ActualState  string `json:"actual_state"`
-			DesiredState string `json:"desired_state"`
-		} `json:"data"`
-	}
-	url := fmt.Sprintf("%s/services?project=%s", httpAddr, projectID)
-	if err := getJSON(url, &result); err != nil {
-		return 0, 0, err
-	}
-	total, running := 0, 0
-	for _, s := range result.Data {
-		if s.DesiredState == "stopped" {
-			continue
-		}
-		total++
-		if s.ActualState == "running" {
-			running++
-		}
-	}
-	return running, total, nil
 }
 
 // ── FORGE HELPERS ─────────────────────────────────────────────────────────────

@@ -55,33 +55,31 @@ func rootCmd() *cobra.Command {
 		"engxd HTTP API address (for agent commands)")
 
 	root.AddCommand(
-		// Project lifecycle
-		projectCmd(&socketPath),
+		// ── Visible: user-facing commands ──────────────────────────────────
+		runCmd(&socketPath, &httpAddr),
+		projectStatusUXCmd(&httpAddr),
+		statusCmd(&httpAddr),
 		registerCmd(&socketPath, &httpAddr),
-		servicesCmd(&socketPath, &httpAddr),
-		eventsCmd(&socketPath),
-		agentsCmd(&httpAddr),
-		// Platform
-		platformCmd(&socketPath, &httpAddr),
-		// Observe
-		dropCmd(&socketPath),
-		watchCmd(&socketPath),
-		// Forge integration
+		initCmd(&socketPath, &httpAddr),
 		buildCmd(&httpAddr),
 		checkCmd(&httpAddr),
-		runCmd(&socketPath, &httpAddr),
 		traceCmd(),
-		// Onboarding
-		initCmd(&socketPath, &httpAddr),
-		// Ops
 		logsCmd(),
-		logsFollowCmd(),
-		versionCmd(),
-		// Diagnosis
 		doctorCmd(&httpAddr),
-		statusCmd(&httpAddr),
+		platformCmd(&socketPath, &httpAddr),
+		projectCmd(&socketPath),
+		upgradeCmd(&httpAddr),
+		versionCmd(),
+	)
+
+	// ── Hidden: advanced/internal commands (ADR-040) ─────────────────────
+	for _, advanced := range []*cobra.Command{
+		eventsCmd(&socketPath),
+		agentsCmd(&httpAddr),
+		dropCmd(&socketPath),
+		watchCmd(&socketPath),
+		servicesCmd(&socketPath, &httpAddr),
 		sentinelCmd(&httpAddr),
-		// Automation
 		workflowCmd(&httpAddr),
 		triggerCmd(&httpAddr),
 		guardCmd(&httpAddr),
@@ -89,9 +87,32 @@ func rootCmd() *cobra.Command {
 		execCmd(&httpAddr),
 		ciCmd(&httpAddr),
 		eventsStreamCmd(&httpAddr),
-		// Maintenance
-		upgradeCmd(&httpAddr),
-	)
+		logsFollowCmd(),
+	} {
+		advanced.Hidden = true
+		root.AddCommand(advanced)
+	}
+
+	// Progressive disclosure — hide internal commands from default help (ADR-040).
+	for _, name := range []string{
+		"events", "agents", "drop", "watch",
+		"sentinel", "workflow", "trigger", "guard", "on", "exec",
+		"ci", "stream",
+	} {
+		if cmd, _, err := root.Find([]string{name}); err == nil && cmd != nil {
+			cmd.Hidden = true
+		}
+	}
+
+	// ADR-040: progressive disclosure — hide internal commands from default help.
+	for _, name := range []string{
+		"events", "agents", "drop", "watch",
+		"sentinel", "workflow", "trigger", "guard", "on", "exec", "ci", "stream",
+	} {
+		if sub, _, err := root.Find([]string{name}); err == nil && sub != root {
+			sub.Hidden = true
+		}
+	}
 
 	return root
 }

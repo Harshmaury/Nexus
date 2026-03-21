@@ -19,12 +19,32 @@ import (
 
 // ── SOCKET CLIENT ─────────────────────────────────────────────────────────────
 
-// sendCommand dials the engxd Unix socket, sends a command, and returns the response.
-// Returns a descriptive error if the daemon is not running.
+// sendCommand dials the engxd Unix socket and sends a command.
+// Retries up to 3 times with backoff so callers survive a brief daemon startup
+// race — e.g. `engxd & sleep 1 && engx platform start` no longer needs the sleep.
 func sendCommand(socketPath string, cmd daemon.Command, params any) (*daemon.Response, error) {
-	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
+	backoff := []time.Duration{0, 300 * time.Millisecond, 700 * time.Millisecond}
+	var lastErr error
+	for _, wait := range backoff {
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+		resp, err := trySendCommand(socketPath, cmd, params)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("daemon not running — start with: engxd (%w)", lastErr)
+}
+
+// trySendCommand makes one socket attempt. Returns the daemon error string
+// as a Go error if ok=false, so the caller can distinguish transport errors
+// from command errors.
+func trySendCommand(socketPath string, cmd daemon.Command, params any) (*daemon.Response, error) {
+	conn, err := net.DialTimeout("unix", socketPath, 3*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("daemon not running — start with: engxd")
+		return nil, err // transport error — eligible for retry
 	}
 	defer conn.Close()
 
@@ -49,6 +69,7 @@ func sendCommand(socketPath string, cmd daemon.Command, params any) (*daemon.Res
 		return nil, fmt.Errorf("decode: %w", err)
 	}
 	if !resp.OK {
+		// Command error — not a transport error, do not retry.
 		return nil, fmt.Errorf("%s", resp.Error)
 	}
 	return &resp, nil
@@ -125,4 +146,30 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// projectServiceStates returns (running, total) for a project's services.
+// Used by run, ci, and automation commands.
+func projectServiceStates(httpAddr, projectID string) (int, int, error) {
+	var result struct {
+		Data []struct {
+			ActualState  string `json:"actual_state"`
+			DesiredState string `json:"desired_state"`
+		} `json:"data"`
+	}
+	url := fmt.Sprintf("%s/services?project=%s", httpAddr, projectID)
+	if err := getJSON(url, &result); err != nil {
+		return 0, 0, err
+	}
+	total, running := 0, 0
+	for _, s := range result.Data {
+		if s.DesiredState == "stopped" {
+			continue
+		}
+		total++
+		if s.ActualState == "running" {
+			running++
+		}
+	}
+	return running, total, nil
 }
