@@ -9,580 +9,112 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
   :root {
-    --bg:       #0a0a0b;
-    --surface:  #111114;
-    --border:   #1e1e24;
-    --dim:      #2a2a32;
-    --muted:    #4a4a58;
-    --text:     #e8e8f0;
-    --sub:      #888898;
-    --accent:   #5b8eff;
-    --accent2:  #3dffd0;
-    --warn:     #ff6b4a;
-    --mono:     'DM Mono', monospace;
-    --sans:     'Syne', sans-serif;
+    --bg:#0a0a0b;--surface:#111114;--border:#1e1e24;--dim:#2a2a32;--muted:#4a4a58;
+    --text:#e8e8f0;--sub:#888898;--accent:#5b8eff;--accent2:#3dffd0;--warn:#ff6b4a;
+    --mono:'DM Mono',monospace;--sans:'Syne',sans-serif;
   }
-
-  html { scroll-behavior: smooth; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.6;
-    overflow-x: hidden;
-  }
-
-  /* ── GRID OVERLAY ── */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image:
-      linear-gradient(var(--border) 1px, transparent 1px),
-      linear-gradient(90deg, var(--border) 1px, transparent 1px);
-    background-size: 48px 48px;
-    opacity: 0.35;
-    pointer-events: none;
-    z-index: 0;
-  }
-
-  /* ── NAV ── */
-  nav {
-    position: fixed;
-    top: 0; left: 0; right: 0;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 40px;
-    height: 56px;
-    background: rgba(10,10,11,0.85);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--border);
-  }
-
-  .nav-logo {
-    font-family: var(--mono);
-    font-size: 15px;
-    font-weight: 500;
-    color: var(--text);
-    letter-spacing: 0.04em;
-  }
-
-  .nav-logo span { color: var(--accent); }
-
-  nav a {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--sub);
-    text-decoration: none;
-    letter-spacing: 0.06em;
-    transition: color 0.2s;
-  }
-
-  nav a:hover { color: var(--text); }
-
-  .nav-links { display: flex; gap: 32px; align-items: center; }
-
-  .nav-gh {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 14px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text) !important;
-    font-size: 12px !important;
-    transition: border-color 0.2s, background 0.2s !important;
-  }
-
-  .nav-gh:hover {
-    border-color: var(--accent) !important;
-    background: rgba(91,142,255,0.06) !important;
-    color: var(--text) !important;
-  }
-
-  /* ── SECTIONS ── */
-  section { position: relative; z-index: 1; }
-
-  /* ── HERO ── */
-  .hero {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    padding: 120px 40px 80px;
-    max-width: 960px;
-    margin: 0 auto;
-  }
-
-  .hero-tag {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.12em;
-    color: var(--accent);
-    text-transform: uppercase;
-    margin-bottom: 28px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .hero-tag::before {
-    content: '';
-    width: 24px;
-    height: 1px;
-    background: var(--accent);
-  }
-
-  h1 {
-    font-size: clamp(48px, 7vw, 88px);
-    font-weight: 800;
-    line-height: 1.0;
-    letter-spacing: -0.03em;
-    margin-bottom: 32px;
-  }
-
-  h1 .line2 {
-    color: transparent;
-    -webkit-text-stroke: 1px var(--dim);
-  }
-
-  h1 .accent { color: var(--accent); }
-
-  .hero-sub {
-    font-family: var(--mono);
-    font-size: 16px;
-    color: var(--sub);
-    max-width: 540px;
-    line-height: 1.7;
-    margin-bottom: 52px;
-  }
-
-  .hero-sub strong {
-    color: var(--text);
-    font-weight: 400;
-  }
-
-  /* ── INSTALL BOX ── */
-  .install-box {
-    display: inline-flex;
-    align-items: center;
-    gap: 0;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
-    margin-bottom: 16px;
-  }
-
-  .install-cmd {
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--text);
-    padding: 14px 20px;
-    letter-spacing: 0.02em;
-    user-select: all;
-  }
-
-  .install-cmd .cmd-dim { color: var(--muted); }
-  .install-cmd .cmd-url { color: var(--accent2); }
-
-  .copy-btn {
-    background: var(--dim);
-    border: none;
-    border-left: 1px solid var(--border);
-    color: var(--sub);
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.06em;
-    padding: 14px 18px;
-    cursor: pointer;
-    transition: background 0.2s, color 0.2s;
-  }
-
-  .copy-btn:hover { background: var(--accent); color: #fff; }
-
-  .install-note {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    letter-spacing: 0.04em;
-  }
-
-  .install-note a {
-    color: var(--sub);
-    text-decoration: none;
-  }
-
-  .install-note a:hover { color: var(--accent); }
-
-  /* ── STATS ROW ── */
-  .stats {
-    display: flex;
-    gap: 48px;
-    padding: 48px 40px;
-    max-width: 960px;
-    margin: 0 auto;
-    border-top: 1px solid var(--border);
-    border-bottom: 1px solid var(--border);
-  }
-
-  .stat-item { display: flex; flex-direction: column; gap: 4px; }
-
-  .stat-num {
-    font-size: 32px;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    color: var(--text);
-  }
-
-  .stat-num span { color: var(--accent); }
-
-  .stat-label {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  /* ── FOUR COMMANDS ── */
-  .commands {
-    padding: 96px 40px;
-    max-width: 960px;
-    margin: 0 auto;
-  }
-
-  .section-label {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.12em;
-    color: var(--accent);
-    text-transform: uppercase;
-    margin-bottom: 16px;
-  }
-
-  .section-title {
-    font-size: clamp(28px, 4vw, 40px);
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    margin-bottom: 12px;
-  }
-
-  .section-sub {
-    font-family: var(--mono);
-    font-size: 14px;
-    color: var(--sub);
-    margin-bottom: 56px;
-    max-width: 480px;
-  }
-
-  .cmd-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2px;
-  }
-
-  .cmd-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    padding: 32px;
-    transition: border-color 0.25s, background 0.25s;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .cmd-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--accent), transparent);
-    opacity: 0;
-    transition: opacity 0.25s;
-  }
-
-  .cmd-card:hover {
-    border-color: var(--accent);
-    background: rgba(91,142,255,0.03);
-  }
-
-  .cmd-card:hover::before { opacity: 1; }
-
-  .cmd-code {
-    font-family: var(--mono);
-    font-size: 14px;
-    color: var(--accent2);
-    margin-bottom: 16px;
-    letter-spacing: 0.02em;
-  }
-
-  .cmd-code .cmd-arg { color: var(--sub); }
-
-  .cmd-desc {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--sub);
-    line-height: 1.7;
-  }
-
-  .cmd-num {
-    position: absolute;
-    top: 16px; right: 20px;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--dim);
-    letter-spacing: 0.06em;
-  }
-
-  /* ── FEATURES ── */
-  .features {
-    padding: 96px 40px;
-    max-width: 960px;
-    margin: 0 auto;
-  }
-
-  .feature-list {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 24px;
-    margin-top: 56px;
-  }
-
-  .feature-item {
-    padding: 28px;
-    border: 1px solid var(--border);
-    border-radius: 2px;
-  }
-
-  .feature-icon {
-    width: 32px;
-    height: 32px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-bottom: 16px;
-    font-size: 14px;
-  }
-
-  .feature-name {
-    font-size: 14px;
-    font-weight: 600;
-    margin-bottom: 8px;
-    letter-spacing: -0.01em;
-  }
-
-  .feature-text {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--sub);
-    line-height: 1.7;
-  }
-
-  /* ── TERMINAL DEMO ── */
-  .demo {
-    padding: 96px 40px;
-    max-width: 960px;
-    margin: 0 auto;
-  }
-
-  .terminal {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
-    margin-top: 48px;
-  }
-
-  .terminal-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-  }
-
-  .dot { width: 10px; height: 10px; border-radius: 50%; }
-  .dot-r { background: #ff5f56; }
-  .dot-y { background: #ffbd2e; }
-  .dot-g { background: #27c93f; }
-
-  .terminal-title {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    margin-left: auto;
-    margin-right: auto;
-    letter-spacing: 0.06em;
-  }
-
-  .terminal-body {
-    padding: 28px 32px;
-    font-family: var(--mono);
-    font-size: 13px;
-    line-height: 2;
-  }
-
-  .t-prompt { color: var(--muted); }
-  .t-cmd    { color: var(--text); }
-  .t-ok     { color: var(--accent2); }
-  .t-warn   { color: var(--warn); }
-  .t-dim    { color: var(--muted); }
-  .t-accent { color: var(--accent); }
-  .t-blank  { display: block; height: 8px; }
-
-  /* ── CTA ── */
-  .cta {
-    padding: 96px 40px;
-    max-width: 960px;
-    margin: 0 auto;
-    text-align: center;
-    border-top: 1px solid var(--border);
-  }
-
-  .cta h2 {
-    font-size: clamp(32px, 5vw, 56px);
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    margin-bottom: 16px;
-  }
-
-  .cta p {
-    font-family: var(--mono);
-    font-size: 14px;
-    color: var(--sub);
-    margin-bottom: 48px;
-  }
-
-  .btn-row {
-    display: flex;
-    gap: 16px;
-    justify-content: center;
-    flex-wrap: wrap;
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 14px 28px;
-    font-family: var(--mono);
-    font-size: 13px;
-    letter-spacing: 0.04em;
-    border-radius: 4px;
-    text-decoration: none;
-    transition: all 0.2s;
-    cursor: pointer;
-    border: none;
-  }
-
-  .btn-primary {
-    background: var(--accent);
-    color: #fff;
-  }
-
-  .btn-primary:hover {
-    background: #7aa8ff;
-    transform: translateY(-1px);
-  }
-
-  .btn-outline {
-    background: transparent;
-    color: var(--text);
-    border: 1px solid var(--border);
-  }
-
-  .btn-outline:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .btn-sponsor {
-    background: transparent;
-    color: #e879a0;
-    border: 1px solid #3d1a28;
-  }
-
-  .btn-sponsor:hover {
-    background: rgba(232,121,160,0.08);
-    border-color: #e879a0;
-  }
-
-  /* ── FOOTER ── */
-  footer {
-    border-top: 1px solid var(--border);
-    padding: 32px 40px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    position: relative;
-    z-index: 1;
-  }
-
-  .footer-logo {
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--muted);
-  }
-
-  .footer-logo span { color: var(--accent); }
-
-  .footer-links {
-    display: flex;
-    gap: 24px;
-  }
-
-  .footer-links a {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    text-decoration: none;
-    letter-spacing: 0.06em;
-    transition: color 0.2s;
-  }
-
-  .footer-links a:hover { color: var(--text); }
-
-  /* ── ANIMATIONS ── */
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(20px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
-  .hero-tag  { animation: fadeUp 0.5s ease both; }
-  h1         { animation: fadeUp 0.5s 0.1s ease both; }
-  .hero-sub  { animation: fadeUp 0.5s 0.2s ease both; }
-  .install-box { animation: fadeUp 0.5s 0.3s ease both; }
-  .install-note { animation: fadeUp 0.5s 0.35s ease both; }
-
-  /* ── RESPONSIVE ── */
-  @media (max-width: 720px) {
-    nav { padding: 0 20px; }
-    .nav-links { display: none; }
-    .hero { padding: 100px 20px 60px; }
-    .stats { padding: 32px 20px; gap: 24px; flex-wrap: wrap; }
-    .commands, .features, .demo, .cta { padding: 64px 20px; }
-    .cmd-grid { grid-template-columns: 1fr; }
-    .feature-list { grid-template-columns: 1fr; }
-    footer { flex-direction: column; gap: 16px; text-align: center; padding: 24px 20px; }
-    .install-cmd { font-size: 11px; }
-  }
+  html{scroll-behavior:smooth;}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;overflow-x:hidden;}
+  body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);background-size:48px 48px;opacity:.3;pointer-events:none;z-index:0;}
+  section,nav,footer{position:relative;z-index:1;}
+  nav{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 40px;height:56px;background:rgba(10,10,11,.9);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);}
+  .nav-logo{font-family:var(--mono);font-size:15px;font-weight:500;letter-spacing:.04em;}
+  .nav-logo span{color:var(--accent);}
+  .nav-links{display:flex;gap:28px;align-items:center;}
+  nav a{font-family:var(--mono);font-size:12px;color:var(--sub);text-decoration:none;letter-spacing:.06em;transition:color .2s;}
+  nav a:hover{color:var(--text);}
+  .nav-gh{display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid var(--border);border-radius:4px;color:var(--text)!important;transition:border-color .2s,background .2s!important;}
+  .nav-gh:hover{border-color:var(--accent)!important;background:rgba(91,142,255,.06)!important;}
+  .hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:120px 40px 80px;max-width:960px;margin:0 auto;}
+  .hero-tag{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--accent);text-transform:uppercase;margin-bottom:28px;display:flex;align-items:center;gap:10px;}
+  .hero-tag::before{content:'';width:24px;height:1px;background:var(--accent);}
+  h1{font-size:clamp(48px,7vw,88px);font-weight:800;line-height:1.0;letter-spacing:-.03em;margin-bottom:32px;}
+  h1 .line2{color:transparent;-webkit-text-stroke:1px var(--dim);}
+  h1 .accent{color:var(--accent);}
+  .hero-sub{font-family:var(--mono);font-size:16px;color:var(--sub);max-width:540px;line-height:1.7;margin-bottom:52px;}
+  .hero-sub strong{color:var(--text);font-weight:400;}
+  .install-box{display:inline-flex;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:16px;}
+  .install-cmd{font-family:var(--mono);font-size:13px;color:var(--text);padding:14px 20px;letter-spacing:.02em;user-select:all;}
+  .install-cmd .cmd-dim{color:var(--muted);}.install-cmd .cmd-url{color:var(--accent2);}
+  .copy-btn{background:var(--dim);border:none;border-left:1px solid var(--border);color:var(--sub);font-family:var(--mono);font-size:11px;letter-spacing:.06em;padding:14px 18px;cursor:pointer;transition:background .2s,color .2s;}
+  .copy-btn:hover{background:var(--accent);color:#fff;}
+  .install-note{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.04em;}
+  .install-note a{color:var(--sub);text-decoration:none;}.install-note a:hover{color:var(--accent);}
+  .stats{display:flex;gap:48px;padding:48px 40px;max-width:960px;margin:0 auto;border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
+  .stat-item{display:flex;flex-direction:column;gap:4px;}
+  .stat-num{font-size:32px;font-weight:800;letter-spacing:-.03em;}.stat-num span{color:var(--accent);}
+  .stat-label{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;}
+  .wrap{max-width:960px;margin:0 auto;padding:96px 40px;}
+  .section-label{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--accent);text-transform:uppercase;margin-bottom:16px;}
+  .section-title{font-size:clamp(28px,4vw,40px);font-weight:700;letter-spacing:-.02em;margin-bottom:12px;}
+  .section-sub{font-family:var(--mono);font-size:14px;color:var(--sub);margin-bottom:56px;max-width:520px;line-height:1.7;}
+  .steps{display:flex;flex-direction:column;gap:2px;margin-top:56px;}
+  .step{display:grid;grid-template-columns:64px 1fr;background:var(--surface);border:1px solid var(--border);transition:border-color .25s;overflow:hidden;}
+  .step:hover{border-color:var(--accent);}
+  .step-num{display:flex;align-items:flex-start;justify-content:center;padding:32px 0 0;font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--muted);border-right:1px solid var(--border);}
+  .step-body{padding:28px 32px;}
+  .step-title{font-size:16px;font-weight:700;letter-spacing:-.01em;margin-bottom:8px;}
+  .step-desc{font-family:var(--mono);font-size:12px;color:var(--sub);line-height:1.7;margin-bottom:20px;}
+  .step-code{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:16px 20px;font-family:var(--mono);font-size:12px;line-height:2;overflow-x:auto;}
+  .s-prompt{color:var(--muted);user-select:none;}.s-cmd{color:var(--text);}.s-comment{color:var(--muted);}
+  .s-ok{color:var(--accent2);}.s-arg{color:var(--accent2);}.s-flag{color:var(--accent);}
+  .step-note{margin-top:12px;font-family:var(--mono);font-size:11px;color:var(--muted);padding-left:12px;border-left:2px solid var(--dim);line-height:1.7;}
+  .step-note strong{color:var(--sub);font-weight:400;}
+  .cmd-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px;}
+  .cmd-card{background:var(--surface);border:1px solid var(--border);padding:32px;position:relative;overflow:hidden;transition:border-color .25s,background .25s;}
+  .cmd-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--accent),transparent);opacity:0;transition:opacity .25s;}
+  .cmd-card:hover{border-color:var(--accent);background:rgba(91,142,255,.03);}.cmd-card:hover::before{opacity:1;}
+  .cmd-code{font-family:var(--mono);font-size:14px;color:var(--accent2);margin-bottom:12px;}
+  .cmd-code .cmd-arg{color:var(--sub);}
+  .cmd-desc{font-family:var(--mono);font-size:12px;color:var(--sub);line-height:1.7;margin-bottom:14px;}
+  .cmd-example{font-family:var(--mono);font-size:11px;color:var(--muted);padding:8px 12px;background:var(--bg);border-radius:3px;line-height:1.8;}
+  .cmd-example .ex-ok{color:var(--accent2);}.cmd-example .ex-warn{color:var(--warn);}
+  .cmd-num{position:absolute;top:16px;right:20px;font-family:var(--mono);font-size:11px;color:var(--dim);}
+  .terminal{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-top:48px;}
+  .terminal-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg);}
+  .dot{width:10px;height:10px;border-radius:50%;}.dot-r{background:#ff5f56;}.dot-y{background:#ffbd2e;}.dot-g{background:#27c93f;}
+  .terminal-title{font-family:var(--mono);font-size:11px;color:var(--muted);margin:0 auto;letter-spacing:.06em;}
+  .terminal-body{padding:28px 32px;font-family:var(--mono);font-size:13px;line-height:2;}
+  .t-prompt{color:var(--muted);}.t-cmd{color:var(--text);}.t-ok{color:var(--accent2);}.t-warn{color:var(--warn);}.t-dim{color:var(--muted);}.t-blank{display:block;height:8px;}
+  .feature-list{display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-top:56px;}
+  .feature-item{padding:28px;border:1px solid var(--border);border-radius:2px;}
+  .feature-icon{font-size:20px;margin-bottom:16px;}
+  .feature-name{font-size:14px;font-weight:700;margin-bottom:8px;}
+  .feature-text{font-family:var(--mono);font-size:12px;color:var(--sub);line-height:1.7;}
+  .faq-list{display:flex;flex-direction:column;gap:2px;margin-top:48px;}
+  .faq-item{background:var(--surface);border:1px solid var(--border);}
+  .faq-q{padding:20px 24px;font-size:14px;font-weight:600;cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none;}
+  .faq-q:hover{color:var(--accent);}
+  .faq-arrow{font-family:var(--mono);font-size:12px;color:var(--muted);transition:transform .2s;}
+  .faq-item.open .faq-arrow{transform:rotate(90deg);}
+  .faq-a{display:none;padding:16px 24px 20px;font-family:var(--mono);font-size:13px;color:var(--sub);line-height:1.8;border-top:1px solid var(--border);}
+  .faq-item.open .faq-a{display:block;}
+  .cta{padding:96px 40px;max-width:960px;margin:0 auto;text-align:center;border-top:1px solid var(--border);}
+  .cta h2{font-size:clamp(32px,5vw,56px);font-weight:800;letter-spacing:-.03em;margin-bottom:16px;}
+  .cta p{font-family:var(--mono);font-size:14px;color:var(--sub);margin-bottom:48px;}
+  .btn-row{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:14px 28px;font-family:var(--mono);font-size:13px;letter-spacing:.04em;border-radius:4px;text-decoration:none;transition:all .2s;cursor:pointer;border:none;}
+  .btn-primary{background:var(--accent);color:#fff;}.btn-primary:hover{background:#7aa8ff;transform:translateY(-1px);}
+  .btn-outline{background:transparent;color:var(--text);border:1px solid var(--border);}.btn-outline:hover{border-color:var(--accent);color:var(--accent);}
+  .btn-sponsor{background:transparent;color:#e879a0;border:1px solid #3d1a28;}.btn-sponsor:hover{background:rgba(232,121,160,.08);border-color:#e879a0;}
+  footer{border-top:1px solid var(--border);padding:32px 40px;display:flex;justify-content:space-between;align-items:center;}
+  .footer-logo{font-family:var(--mono);font-size:13px;color:var(--muted);}.footer-logo span{color:var(--accent);}
+  .footer-links{display:flex;gap:24px;}
+  .footer-links a{font-family:var(--mono);font-size:11px;color:var(--muted);text-decoration:none;letter-spacing:.06em;transition:color .2s;}.footer-links a:hover{color:var(--text);}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+  .hero-tag{animation:fadeUp .5s ease both;}h1{animation:fadeUp .5s .1s ease both;}.hero-sub{animation:fadeUp .5s .2s ease both;}.install-box{animation:fadeUp .5s .3s ease both;}.install-note{animation:fadeUp .5s .35s ease both;}
+  @media(max-width:720px){nav{padding:0 20px;}.nav-links{display:none;}.hero{padding:100px 20px 60px;}.stats{padding:32px 20px;gap:24px;flex-wrap:wrap;}.wrap{padding:64px 20px;}.cmd-grid{grid-template-columns:1fr;}.feature-list{grid-template-columns:1fr;}.step{grid-template-columns:1fr;}.step-num{padding:20px 20px 0;border-right:none;border-bottom:1px solid var(--border);justify-content:flex-start;}footer{flex-direction:column;gap:16px;text-align:center;padding:24px 20px;}}
 </style>
 </head>
 <body>
-
 <nav>
   <div class="nav-logo"><span>engx</span> — control plane</div>
   <div class="nav-links">
+    <a href="#start">Get started</a>
     <a href="#commands">Commands</a>
     <a href="#features">Features</a>
+    <a href="#faq">FAQ</a>
     <a href="https://github.com/Harshmaury/Nexus" class="nav-gh" target="_blank">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
       GitHub
@@ -590,159 +122,221 @@
   </div>
 </nav>
 
-<!-- ── HERO ── -->
 <section class="hero">
   <div class="hero-tag">v2.0.0 — open source</div>
-  <h1>
-    Run your services.<br>
-    <span class="line2">See what they're</span><br>
-    <span class="accent">doing.</span>
-  </h1>
-  <p class="hero-sub">
-    <strong>engx</strong> is a local runtime platform for multi-service development.<br>
-    One daemon. One CLI. No tab soup of terminals and log files.<br>
-    Start services, watch them, recover them — from a single control plane.
-  </p>
+  <h1>Run your services.<br><span class="line2">See what they're</span><br><span class="accent">doing.</span></h1>
+  <p class="hero-sub"><strong>engx</strong> is a local runtime platform for multi-service development.<br>One daemon. One CLI. No tab soup of terminals and log files.<br>Start services, watch them, recover them — from a single control plane.</p>
   <div class="install-box">
-    <div class="install-cmd">
-      <span class="cmd-dim">curl -fsSL </span><span class="cmd-url">https://harshmaury.github.io/Nexus/install.sh</span><span class="cmd-dim"> | bash</span>
-    </div>
+    <div class="install-cmd"><span class="cmd-dim">curl -fsSL </span><span class="cmd-url">https://harshmaury.github.io/Nexus/install.sh</span><span class="cmd-dim"> | bash</span></div>
     <button class="copy-btn" onclick="copyInstall(this)">COPY</button>
   </div>
-  <p class="install-note">
-    macOS &amp; Linux · <a href="https://github.com/Harshmaury/Nexus/releases" target="_blank">View releases</a> · <a href="https://github.com/Harshmaury/Nexus" target="_blank">Source</a>
-  </p>
+  <p class="install-note">macOS &amp; Linux · <a href="https://github.com/Harshmaury/Nexus/releases" target="_blank">View releases</a> · <a href="https://github.com/Harshmaury/Nexus" target="_blank">Source</a></p>
 </section>
 
-<!-- ── STATS ── -->
 <div class="stats">
-  <div class="stat-item">
-    <div class="stat-num">13<span>×</span></div>
-    <div class="stat-label">Repositories</div>
-  </div>
-  <div class="stat-item">
-    <div class="stat-num">40<span>+</span></div>
-    <div class="stat-label">ADRs shipped</div>
-  </div>
-  <div class="stat-item">
-    <div class="stat-num">3</div>
-    <div class="stat-label">Binaries</div>
-  </div>
-  <div class="stat-item">
-    <div class="stat-num">0</div>
-    <div class="stat-label">Cloud deps</div>
-  </div>
+  <div class="stat-item"><div class="stat-num">13<span>×</span></div><div class="stat-label">Repositories</div></div>
+  <div class="stat-item"><div class="stat-num">40<span>+</span></div><div class="stat-label">ADRs shipped</div></div>
+  <div class="stat-item"><div class="stat-num">3</div><div class="stat-label">Binaries</div></div>
+  <div class="stat-item"><div class="stat-num">0</div><div class="stat-label">Cloud deps</div></div>
 </div>
 
-<!-- ── FOUR COMMANDS ── -->
-<section class="commands" id="commands">
+<section class="wrap" id="start">
+  <div class="section-label">Getting started</div>
+  <h2 class="section-title">From zero to running<br>in four steps.</h2>
+  <p class="section-sub">No Docker required. No config files to write. No cloud account. Just install, register your project, and start.</p>
+  <div class="steps">
+
+    <div class="step">
+      <div class="step-num">01</div>
+      <div class="step-body">
+        <div class="step-title">Install the platform</div>
+        <div class="step-desc">One command installs three binaries to <code>~/bin/</code> — the daemon, the CLI, and the agent. Detects your OS and architecture automatically.</div>
+        <div class="step-code">
+          <div><span class="s-prompt">$ </span><span class="s-cmd">curl -fsSL https://harshmaury.github.io/Nexus/install.sh | bash</span></div>
+          <div><span class="s-ok">  ✓</span> engxd installed to ~/bin/engxd</div>
+          <div><span class="s-ok">  ✓</span> engx  installed to ~/bin/engx</div>
+          <div><span class="s-ok">  ✓</span> engxa installed to ~/bin/engxa</div>
+          <div><span class="s-ok">  ✓</span> ~/bin added to PATH in ~/.bashrc</div>
+        </div>
+        <div class="step-note"><strong>engxd</strong> is the background daemon. <strong>engx</strong> is the CLI you interact with. <strong>engxa</strong> connects remote machines to the same platform.</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num">02</div>
+      <div class="step-body">
+        <div class="step-title">Register engxd as a system service</div>
+        <div class="step-desc">Makes the daemon start automatically at login and restart if it crashes. You never manage it manually again.</div>
+        <div class="step-code">
+          <div><span class="s-prompt">$ </span><span class="s-cmd">engx platform install</span></div>
+          <div><span class="s-ok">  ✓</span> engxd registered as system service</div>
+          <div><span class="s-ok">  ✓</span> engxd will start automatically at login</div>
+        </div>
+        <div class="step-note"><strong>macOS</strong> uses launchd. <strong>Linux</strong> uses systemd. To skip this and start manually instead, run <code>engxd &amp;</code>.</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num">03</div>
+      <div class="step-body">
+        <div class="step-title">Register your project</div>
+        <div class="step-desc"><code>engx init</code> detects your language, finds the entry point, and generates a descriptor. Then <code>engx register</code> connects it to the platform. Supports Go, Node.js, Python, Rust, and .NET.</div>
+        <div class="step-code">
+          <div><span class="s-comment">  # Go to your project directory</span></div>
+          <div><span class="s-prompt">$ </span><span class="s-cmd">cd ~/projects/my-api</span></div>
+          <div>&nbsp;</div>
+          <div><span class="s-comment">  # Detect language and generate descriptor</span></div>
+          <div><span class="s-prompt">$ </span><span class="s-cmd">engx init</span></div>
+          <div><span class="s-ok">  ✓</span> .nexus.yaml written</div>
+          <div>    name=my-api  type=platform-daemon  language=go</div>
+          <div>    runtime: go run ./cmd/my-api/</div>
+          <div>&nbsp;</div>
+          <div><span class="s-comment">  # Register with the platform</span></div>
+          <div><span class="s-prompt">$ </span><span class="s-cmd">engx register .</span></div>
+          <div><span class="s-ok">  ✓</span> Registered: my-api</div>
+          <div><span class="s-ok">  ✓</span> Service registered: my-api-daemon</div>
+        </div>
+        <div class="step-note">You can edit <code>.nexus.yaml</code> after generation if the auto-detection isn't right. The file is plain YAML — set any command you want under <code>runtime:</code>.</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num">04</div>
+      <div class="step-body">
+        <div class="step-title">Start and verify</div>
+        <div class="step-desc"><code>engx run</code> validates, starts, waits, and confirms in one command. If anything fails it tells you what/where/why and exactly what to type next.</div>
+        <div class="step-code">
+          <div><span class="s-prompt">$ </span><span class="s-cmd">engx run <span class="s-arg">my-api</span></span></div>
+          <div>&nbsp;</div>
+          <div>  Project: my-api</div>
+          <div>  Validating... <span class="s-ok">✓</span></div>
+          <div>  Starting...   <span class="s-ok">✓</span></div>
+          <div>  Waiting...    ···<span class="s-ok">✓</span></div>
+          <div>&nbsp;</div>
+          <div>  Status:     <span class="s-ok">RUNNING</span></div>
+          <div>  Services:   1/1 running</div>
+          <div>&nbsp;</div>
+          <div><span class="s-comment">  # Check the full platform</span></div>
+          <div><span class="s-prompt">$ </span><span class="s-cmd">engx doctor</span></div>
+          <div><span class="s-ok">  ✓</span> engxd running       uptime 0h 02m</div>
+          <div><span class="s-ok">  ✓</span> services            1/1 running</div>
+          <div><span class="s-ok">  ✓</span> db-integrity</div>
+          <div><span class="s-ok">  ✓</span> port-conflicts</div>
+        </div>
+        <div class="step-note">If a service fails, <code>engx run</code> shows the failure reason and the exact command to fix it — no guessing required.</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section class="wrap" id="commands" style="padding-top:0">
   <div class="section-label">Interface</div>
   <h2 class="section-title">Four commands.<br>Ninety percent of your day.</h2>
-  <p class="section-sub">The advanced surface is there when you need it. Hidden until then.</p>
-
+  <p class="section-sub">Advanced commands are hidden until you need them. Start here.</p>
   <div class="cmd-grid">
     <div class="cmd-card">
       <div class="cmd-num">01</div>
       <div class="cmd-code">engx run <span class="cmd-arg">&lt;project&gt;</span></div>
-      <div class="cmd-desc">Validate, start, wait, and confirm — one command. Tells you what failed, where, why, and exactly what to type next.</div>
+      <div class="cmd-desc">Validate, start, wait, and confirm in one command. Failures show what/where/why/next-step — not a stack trace.</div>
+      <div class="cmd-example"><div>  Status:     <span class="ex-ok">RUNNING</span></div><div>  Services:   2/2 running</div></div>
     </div>
     <div class="cmd-card">
       <div class="cmd-num">02</div>
       <div class="cmd-code">engx ps <span class="cmd-arg">[project]</span></div>
-      <div class="cmd-desc">Project-level status. Not service IDs and state machines — outcomes. Running or not, and the reason if not.</div>
+      <div class="cmd-desc">Project-level status. Shows outcomes, not internal IDs. Run without arguments to see everything at once.</div>
+      <div class="cmd-example"><div><span class="ex-ok">  ✓</span> my-api   running</div><div><span class="ex-warn">  ✗</span> worker   1/2 — check: engx logs worker-daemon</div></div>
     </div>
     <div class="cmd-card">
       <div class="cmd-num">03</div>
       <div class="cmd-code">engx logs <span class="cmd-arg">&lt;service&gt;</span></div>
-      <div class="cmd-desc">Tail live logs for any service. Every state change, start, stop, crash, and recovery is an event in the stream.</div>
+      <div class="cmd-desc">Tail logs for any service. Every crash, restart, and state change is in the stream. Add <code>--follow</code> to watch live.</div>
+      <div class="cmd-example"><div>  engx logs my-api-daemon</div><div>  engx logs my-api-daemon --follow</div></div>
     </div>
     <div class="cmd-card">
       <div class="cmd-num">04</div>
       <div class="cmd-code">engx doctor</div>
-      <div class="cmd-desc">Full platform diagnosis. Health, ports, permissions, database integrity, binary versions. Tells you what to fix and how.</div>
+      <div class="cmd-desc">Full platform diagnosis — daemon, running services, ports, permissions, database integrity, binary versions.</div>
+      <div class="cmd-example"><div><span class="ex-ok">  ✓</span> engxd running   uptime 4h 12m</div><div><span class="ex-ok">  ✓</span> services        3/3 running</div></div>
     </div>
   </div>
 </section>
 
-<!-- ── TERMINAL DEMO ── -->
-<section class="demo">
+<section class="wrap" style="padding-top:0">
   <div class="section-label">In practice</div>
-  <h2 class="section-title">What a session looks like.</h2>
-
+  <h2 class="section-title">What a real session looks like.</h2>
   <div class="terminal">
     <div class="terminal-bar">
-      <div class="dot dot-r"></div>
-      <div class="dot dot-y"></div>
-      <div class="dot dot-g"></div>
+      <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
       <div class="terminal-title">engx · local</div>
     </div>
     <div class="terminal-body">
       <div><span class="t-prompt">$ </span><span class="t-cmd">engx doctor</span></div>
       <div><span class="t-ok">  ✓</span><span class="t-dim"> engxd running      uptime 2h 14m</span></div>
-      <div><span class="t-ok">  ✓</span><span class="t-dim"> services           7/7 running</span></div>
+      <div><span class="t-ok">  ✓</span><span class="t-dim"> services           3/3 running</span></div>
       <div><span class="t-ok">  ✓</span><span class="t-dim"> db-integrity</span></div>
-      <div><span class="t-ok">  ✓</span><span class="t-dim"> port-conflicts</span></div>
       <div class="t-blank"></div>
-      <div><span class="t-prompt">$ </span><span class="t-cmd">engx run atlas</span></div>
-      <div><span class="t-dim">  Project: atlas</span></div>
+      <div><span class="t-prompt">$ </span><span class="t-cmd">engx run my-api</span></div>
       <div><span class="t-dim">  Validating... </span><span class="t-ok">✓</span></div>
       <div><span class="t-dim">  Starting...   </span><span class="t-ok">✓</span></div>
       <div><span class="t-dim">  Waiting...    ···</span><span class="t-ok">✓</span></div>
       <div class="t-blank"></div>
-      <div><span class="t-dim">  Status:     </span><span class="t-ok">RUNNING</span></div>
-      <div><span class="t-dim">  Services:   1/1 running</span></div>
+      <div><span class="t-dim">  Status:   </span><span class="t-ok">RUNNING</span></div>
       <div class="t-blank"></div>
       <div><span class="t-prompt">$ </span><span class="t-cmd">engx ps</span></div>
-      <div><span class="t-ok">  ✓</span><span class="t-dim"> atlas               running</span></div>
-      <div><span class="t-ok">  ✓</span><span class="t-dim"> forge               running</span></div>
-      <div><span class="t-ok">  ✓</span><span class="t-dim"> guardian            running</span></div>
-      <div><span class="t-ok">  ✓</span><span class="t-dim"> sentinel            running</span></div>
+      <div><span class="t-ok">  ✓</span><span class="t-dim"> my-api    running</span></div>
+      <div><span class="t-ok">  ✓</span><span class="t-dim"> worker    running</span></div>
+      <div><span class="t-ok">  ✓</span><span class="t-dim"> database  running</span></div>
       <div class="t-blank"></div>
-      <div><span class="t-dim">  4/4 projects running</span></div>
+      <div><span class="t-dim">  3/3 projects running</span></div>
     </div>
   </div>
 </section>
 
-<!-- ── FEATURES ── -->
-<section class="features" id="features">
+<section class="wrap" id="features" style="padding-top:0">
   <div class="section-label">Platform</div>
   <h2 class="section-title">Built for systems<br>with moving parts.</h2>
-
   <div class="feature-list">
-    <div class="feature-item">
-      <div class="feature-icon">⚡</div>
-      <div class="feature-name">Process control</div>
-      <div class="feature-text">Start, stop, restart with backoff. Services move to bounded maintenance on repeated failure — no infinite loops.</div>
+    <div class="feature-item"><div class="feature-icon">⚡</div><div class="feature-name">Process control</div><div class="feature-text">Start, stop, restart with backoff. Services move to bounded maintenance on repeated failure — no infinite loops, no silent crashes.</div></div>
+    <div class="feature-item"><div class="feature-icon">🔍</div><div class="feature-name">Policy governance</div><div class="feature-text">Pre-execution gate blocks unsafe starts. Runtime findings surface failure patterns — high failure rate, unverified targets, stale projects.</div></div>
+    <div class="feature-item"><div class="feature-icon">📡</div><div class="feature-name">Structured events</div><div class="feature-text">Every state change is a typed event with trace ID, span ID, component, and outcome. Full history. Live SSE stream available.</div></div>
+    <div class="feature-item"><div class="feature-icon">🧠</div><div class="feature-name">AI insights</div><div class="feature-text">Sentinel correlates crash clusters, deploy timing, and dependency risk. Called only when you ask — never on background polls.</div></div>
+    <div class="feature-item"><div class="feature-icon">🔄</div><div class="feature-name">Automation engine</div><div class="feature-text">Trigger workflows on platform events or cron schedules. All executions logged with trace IDs — manual and automated unified.</div></div>
+    <div class="feature-item"><div class="feature-icon">🔒</div><div class="feature-name">Local-first</div><div class="feature-text">Everything runs on 127.0.0.1. No cloud dependency, no telemetry, no external calls during normal operation.</div></div>
+  </div>
+</section>
+
+<section class="wrap" id="faq" style="padding-top:0">
+  <div class="section-label">FAQ</div>
+  <h2 class="section-title">Common questions.</h2>
+  <div class="faq-list">
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggleFaq(this)">What languages does engx support? <span class="faq-arrow">›</span></div>
+      <div class="faq-a">engx init auto-detects Go, Node.js, Python, Rust, and .NET. It finds the entry point and generates the correct run command automatically. For any other language, edit the generated .nexus.yaml and set the command manually — engx runs anything that can be started as a process.</div>
     </div>
-    <div class="feature-item">
-      <div class="feature-icon">🔍</div>
-      <div class="feature-name">Policy governance</div>
-      <div class="feature-text">Pre-execution gate (V-rules) and runtime findings (G-rules). Blocks unsafe starts. Surfaces failure patterns automatically.</div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggleFaq(this)">Does it work with Docker or Kubernetes? <span class="faq-arrow">›</span></div>
+      <div class="faq-a">Yes — Docker and Kubernetes providers are supported. Set <code>provider: docker</code> or <code>provider: k8s</code> in your .nexus.yaml runtime section. The default process provider works without Docker and is the fastest path for local development.</div>
     </div>
-    <div class="feature-item">
-      <div class="feature-icon">📡</div>
-      <div class="feature-name">Structured events</div>
-      <div class="feature-text">Every state change is a typed event with trace ID, span ID, component, and outcome. Full history. Live SSE stream.</div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggleFaq(this)">What happens when a service crashes? <span class="faq-arrow">›</span></div>
+      <div class="faq-a">engx restarts it automatically with backoff — 5s, 15s, 30s between attempts. If it crashes repeatedly (default: 5 times), it enters a bounded maintenance state. Run <code>engx services reset &lt;id&gt;</code> to clear it and try again. Every recovery attempt is logged — nothing happens silently.</div>
     </div>
-    <div class="feature-item">
-      <div class="feature-icon">🧠</div>
-      <div class="feature-name">AI insights</div>
-      <div class="feature-text">Sentinel correlates crash clusters, deploy timing, and dependency risk. Optional AI narrative on explicit request only.</div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggleFaq(this)">Can I run multiple projects at once? <span class="faq-arrow">›</span></div>
+      <div class="faq-a">Yes — that's the primary use case. Register each project with <code>engx register &lt;path&gt;</code>, then start them all with <code>engx platform start</code>. Use <code>engx ps</code> to see the status of every project at once. Each project can have multiple services managed independently.</div>
     </div>
-    <div class="feature-item">
-      <div class="feature-icon">🔄</div>
-      <div class="feature-name">Automation engine</div>
-      <div class="feature-text">Trigger workflows on platform events or cron schedules. All executions logged with trace IDs — manual and automated unified.</div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggleFaq(this)">Is my source code sent anywhere? <span class="faq-arrow">›</span></div>
+      <div class="faq-a">No. engx runs entirely on 127.0.0.1. The only external calls are checking GitHub Releases when you run <code>engx upgrade</code>, and the optional Sentinel AI feature (off by default). Your source code never leaves your machine.</div>
     </div>
-    <div class="feature-item">
-      <div class="feature-icon">🔒</div>
-      <div class="feature-name">Local-first</div>
-      <div class="feature-text">Runs entirely on 127.0.0.1. No cloud dependency, no telemetry, no external calls during normal operation.</div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggleFaq(this)">What is the difference between engxd, engx, and engxa? <span class="faq-arrow">›</span></div>
+      <div class="faq-a"><strong>engxd</strong> is the daemon — runs in the background, manages services, tracks state, exposes the HTTP API. <strong>engx</strong> is the CLI — the only thing you interact with directly. <strong>engxa</strong> is the agent — connects a remote machine so you can manage its services from your local engx CLI.</div>
     </div>
   </div>
 </section>
 
-<!-- ── CTA ── -->
 <section class="cta">
   <h2>Start in two minutes.</h2>
   <p>Free and open source. No account. No cloud.</p>
@@ -751,12 +345,8 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
       View on GitHub
     </a>
-    <a href="https://github.com/sponsors/Harshmaury" target="_blank" class="btn btn-sponsor">
-      ♥ Sponsor
-    </a>
-    <a href="https://github.com/Harshmaury/Nexus/releases" target="_blank" class="btn btn-outline">
-      Releases
-    </a>
+    <a href="https://github.com/sponsors/Harshmaury" target="_blank" class="btn btn-sponsor">♥ Sponsor</a>
+    <a href="https://github.com/Harshmaury/Nexus/releases" target="_blank" class="btn btn-outline">Releases</a>
   </div>
 </section>
 
@@ -771,20 +361,8 @@
 </footer>
 
 <script>
-function copyInstall(btn) {
-  const cmd = 'curl -fsSL https://harshmaury.github.io/Nexus/install.sh | bash';
-  navigator.clipboard.writeText(cmd).then(() => {
-    const orig = btn.textContent;
-    btn.textContent = 'COPIED';
-    btn.style.background = 'var(--accent2)';
-    btn.style.color = '#000';
-    setTimeout(() => {
-      btn.textContent = orig;
-      btn.style.background = '';
-      btn.style.color = '';
-    }, 1800);
-  });
-}
+function copyInstall(btn){navigator.clipboard.writeText('curl -fsSL https://harshmaury.github.io/Nexus/install.sh | bash').then(()=>{const o=btn.textContent;btn.textContent='COPIED';btn.style.background='var(--accent2)';btn.style.color='#000';setTimeout(()=>{btn.textContent=o;btn.style.background='';btn.style.color='';},1800);});}
+function toggleFaq(el){el.parentElement.classList.toggle('open');}
 </script>
 </body>
 </html>
