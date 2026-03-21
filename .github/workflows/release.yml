@@ -41,6 +41,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CC_linux_arm64: aarch64-linux-gnu-gcc
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - name: Upload linux checksums artifact
         uses: actions/upload-artifact@v4
@@ -53,6 +54,8 @@ jobs:
     name: Release (macOS)
     runs-on: macos-latest
     needs: release-linux
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
