@@ -3,15 +3,18 @@
 // Platform commands — start/stop/status for the full service fleet.
 // ADR-023: reset fail counts before start.
 // ADR-032: preflight registration check + --register flag.
+// F-4 fix: platformStatusCmd uses Herald instead of raw HTTP + anonymous struct.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 
+	herald "github.com/Harshmaury/Herald/client"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/spf13/cobra"
 )
@@ -98,32 +101,20 @@ func platformStatusCmd(socketPath, httpAddr *string) *cobra.Command {
 		Use:   "status",
 		Short: "Show status of all platform services",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := http.Get(*httpAddr + "/services")
+			c := herald.New(*httpAddr)
+			svcs, err := c.Services().List(context.Background())
 			if err != nil {
 				return fmt.Errorf("cannot reach engxd at %s: %w", *httpAddr, err)
 			}
-			defer resp.Body.Close()
-			var result struct {
-				Data []struct {
-					ID           string `json:"id"`
-					Name         string `json:"name"`
-					DesiredState string `json:"desired_state"`
-					ActualState  string `json:"actual_state"`
-					FailCount    int    `json:"fail_count"`
-				} `json:"data"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-				return fmt.Errorf("decode: %w", err)
-			}
 			total, running := 0, 0
-			for _, svc := range result.Data {
+			for _, svc := range svcs {
 				total++
 				if svc.ActualState == "running" {
 					running++
 				}
 			}
 			fmt.Printf("Platform: %d/%d services running\n", running, total)
-			for _, svc := range result.Data {
+			for _, svc := range svcs {
 				ind := "●"
 				if svc.ActualState != "running" {
 					ind = "○"
