@@ -160,7 +160,7 @@ func (w *EventWriter) write(serviceID string, eventType EventType, traceID strin
 	if err != nil {
 		return fmt.Errorf("marshal event payload: %w", err)
 	}
-	if err := w.store.AppendEvent(serviceID, eventType, w.source, traceID, newSpanID(), "", w.component, "info", outcome, string(data)); err != nil {
+	if err := w.store.AppendEvent(serviceID, eventType, w.source, traceID, newSpanID(), "", w.component, "info", outcome, string(data), ""); err != nil {
 		return err
 	}
 	// Notify SSE broker — best effort, never fails the write.
