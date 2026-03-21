@@ -91,6 +91,7 @@ func newRouter(cfg ServerConfig) http.Handler {
 	servicesH := handler.NewServicesHandler(cfg.Store)
 	eventsH   := handler.NewEventsHandler(cfg.Store)
 	agentsH   := handler.NewAgentsHandler(cfg.Store)
+	systemH   := handler.NewSystemHandler(cfg.Store)
 
 	// ── Core routes ──────────────────────────────────────────────────────────
 	mux.HandleFunc("GET  /health",               makeHealthHandler(cfg.DaemonVersion))
@@ -100,9 +101,13 @@ func newRouter(cfg ServerConfig) http.Handler {
 	mux.HandleFunc("POST /projects/{id}/start",  projectsH.Start)
 	mux.HandleFunc("POST /projects/{id}/stop",   projectsH.Stop)
 	mux.HandleFunc("POST /projects/register",    projectsH.Register)
+	mux.HandleFunc("DELETE /projects/{id}",      projectsH.Delete)
+	mux.HandleFunc("DELETE /projects/{id}",      projectsH.Delete)
 	mux.HandleFunc("GET  /services",             servicesH.List)
 	mux.HandleFunc("POST /services/register",    servicesH.Register)
 	mux.HandleFunc("POST /services/{id}/reset",  servicesH.Reset)
+	mux.HandleFunc("DELETE /services/{id}",      servicesH.Delete)
+	mux.HandleFunc("DELETE /services/{id}",      servicesH.Delete)
 	mux.HandleFunc("GET  /events",               eventsH.List)
 
 	// ── Phase 16: SSE streaming (ADR-015) ────────────────────────────────────
@@ -112,6 +117,9 @@ func newRouter(cfg ServerConfig) http.Handler {
 	}
 
 	// ── Agent routes (Phase 14) ───────────────────────────────────────────────
+	mux.HandleFunc("GET  /system/graph",     systemH.Graph)
+	mux.HandleFunc("POST /system/validate",  systemH.Validate)
+
 	mux.HandleFunc("GET  /agents",                  agentsH.List)
 	mux.HandleFunc("POST /agents/register",         agentsH.Register)
 	mux.HandleFunc("POST /agents/{id}/heartbeat",   agentsH.Heartbeat)

@@ -1,15 +1,11 @@
 // @nexus-project: nexus
 // @nexus-path: internal/state/db_deregister.go
-// ADR-033: DeregisterProject and DeleteServicesByProject.
-// Removes a project and all its services from the state store.
-// Called by the daemon when engx project deregister is invoked.
+// ADR-033: DeregisterProject, DeleteServicesByProject, DeleteService.
 package state
 
 import "fmt"
 
 // DeregisterProject removes a project record from the DB.
-// Does not remove associated services — call DeleteServicesByProject first
-// if a full cleanup is needed.
 func (s *Store) DeregisterProject(id string) error {
 	res, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
@@ -31,4 +27,17 @@ func (s *Store) DeleteServicesByProject(projectID string) (int, error) {
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// DeleteService removes a single service record from the DB.
+func (s *Store) DeleteService(id string) error {
+	res, err := s.db.Exec(`DELETE FROM services WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete service %q: %w", id, err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("service %q not found", id)
+	}
+	return nil
 }

@@ -1,7 +1,7 @@
 // @nexus-project: nexus
 // @nexus-path: internal/state/storer.go
 // Storer is the read/write contract for the Nexus state database.
-// Wave 5: DeregisterProject + DeleteServicesByProject added (ADR-033).
+// Wave 5: DeregisterProject, DeleteServicesByProject, DeleteService added (ADR-033).
 package state
 
 import "time"
@@ -17,7 +17,8 @@ type Storer interface {
 	GetAllServices() ([]*Service, error)
 	GetServicesByProject(project string) ([]*Service, error)
 	GetRunningServices() ([]*Service, error)
-	DeleteServicesByProject(projectID string) (int, error) // ADR-033
+	DeleteService(id string) error                      // ADR-033: remove single service
+	DeleteServicesByProject(projectID string) (int, error) // ADR-033: remove all services for a project
 
 	// ── State ────────────────────────────────────────────────
 	SetActualState(id string, s ServiceState) error
