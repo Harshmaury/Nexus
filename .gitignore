@@ -29,9 +29,9 @@ Thumbs.db
 \ndist/
 
 # compiled binaries at repo root (go build / goreleaser local output)
-engx
-engxd
-engxa
+/engx
+/engxd
+/engxa
 
 # goreleaser build output
 dist/
