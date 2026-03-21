@@ -13,6 +13,8 @@
 package state
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -158,7 +160,7 @@ func (w *EventWriter) write(serviceID string, eventType EventType, traceID strin
 	if err != nil {
 		return fmt.Errorf("marshal event payload: %w", err)
 	}
-	if err := w.store.AppendEvent(serviceID, eventType, w.source, traceID, w.component, outcome, string(data)); err != nil {
+	if err := w.store.AppendEvent(serviceID, eventType, w.source, traceID, newSpanID(), "", w.component, "info", outcome, string(data)); err != nil {
 		return err
 	}
 	// Notify SSE broker — best effort, never fails the write.
@@ -166,6 +168,15 @@ func (w *EventWriter) write(serviceID string, eventType EventType, traceID strin
 		w.broker.PublishRaw(string(eventType), serviceID, string(w.source), w.component, outcome, traceID, string(data))
 	}
 	return nil
+}
+
+// newSpanID generates an 8-char hex span ID for each event write (ADR-037).
+func newSpanID() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%08x", uint32(0xdeadbeef))
+	}
+	return hex.EncodeToString(b)
 }
 
 // newTraceID generates a trace ID for events that start a new operation chain.

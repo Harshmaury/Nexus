@@ -112,15 +112,18 @@ type Service struct {
 //   Component — platform domain that emitted the event (nexus|atlas|forge|drop|system).
 //   Outcome   — result of the action (success|failure|deferred|"").
 type Event struct {
-	ID        int64       `json:"id"`
-	ServiceID string      `json:"service_id"`
-	Type      EventType   `json:"type"`
-	Source    EventSource `json:"source"`
-	TraceID   string      `json:"trace_id"`
-	Component string      `json:"component"`
-	Outcome   string      `json:"outcome"`
-	Payload   string      `json:"payload"`
-	CreatedAt time.Time   `json:"created_at"`
+	ID           int64       `json:"id"`
+	ServiceID    string      `json:"service_id"`
+	Type         EventType   `json:"type"`
+	Source       EventSource `json:"source"`
+	TraceID      string      `json:"trace_id"`
+	SpanID       string      `json:"span_id"`
+	ParentSpanID string      `json:"parent_span_id"`
+	Level        string      `json:"level"`
+	Component    string      `json:"component"`
+	Outcome      string      `json:"outcome"`
+	Payload      string      `json:"payload"`
+	CreatedAt    time.Time   `json:"created_at"`
 }
 
 // HealthLog records every health check result.
@@ -375,10 +378,10 @@ func (s *Store) GetServicesReadyToRestart() ([]*Service, error) {
 // AppendEvent writes an immutable event with source, trace ID, component, and outcome.
 // Phase 15: component identifies the platform domain (nexus|atlas|forge|drop|system).
 // outcome records the action result (success|failure|deferred|"" for informational events).
-func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventSource, traceID string, component string, outcome string, payload string) error {
+func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventSource, traceID, spanID, parentSpanID, component, level, outcome, payload string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO events (service_id, type, source, trace_id, component, outcome, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		serviceID, eventType, source, traceID, component, outcome, payload, time.Now().UTC(),
+		`INSERT INTO events (service_id, type, source, trace_id, span_id, parent_span_id, level, component, outcome, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		serviceID, eventType, source, traceID, spanID, parentSpanID, level, component, outcome, payload, time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("append event %s for %s: %w", eventType, serviceID, err)
@@ -389,7 +392,7 @@ func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventS
 // GetRecentEvents returns the N most recent events.
 func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id, service_id, type, source, trace_id, component, outcome, payload, created_at
+		`SELECT id, service_id, type, source, trace_id, span_id, parent_span_id, level, component, outcome, payload, created_at
 		 FROM events ORDER BY created_at DESC LIMIT ?`,
 		limit,
 	)
@@ -401,7 +404,7 @@ func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	var events []*Event
 	for rows.Next() {
 		e := &Event{}
-		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.Component, &e.Outcome, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.SpanID, &e.ParentSpanID, &e.Level, &e.Component, &e.Outcome, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		events = append(events, e)
@@ -713,6 +716,13 @@ var allMigrations = []schemaVersion{
 	{5, `ALTER TABLE events ADD COLUMN outcome   TEXT NOT NULL DEFAULT ''`},
 	{5, `CREATE INDEX IF NOT EXISTS idx_events_component ON events(component)`},
 	{5, `CREATE INDEX IF NOT EXISTS idx_events_outcome   ON events(outcome)`},
+
+	// ── v6: Signal System — ADR-037 ──────────────────────────────────────────
+	{6, `ALTER TABLE events ADD COLUMN level          TEXT NOT NULL DEFAULT 'info'`},
+	{6, `ALTER TABLE events ADD COLUMN span_id        TEXT NOT NULL DEFAULT ''`},
+	{6, `ALTER TABLE events ADD COLUMN parent_span_id TEXT NOT NULL DEFAULT ''`},
+	{6, `CREATE INDEX IF NOT EXISTS idx_events_level   ON events(level)`},
+	{6, `CREATE INDEX IF NOT EXISTS idx_events_span_id ON events(span_id)`},
 }
 
 // checkIntegrity runs PRAGMA integrity_check on the open database.
