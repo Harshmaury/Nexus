@@ -27,6 +27,7 @@ func doctorCmd(httpAddr *string) *cobra.Command {
 // doctorReport holds all collected signals for one diagnostic run.
 type doctorReport struct {
 	addr     string
+	mode     doctorMode
 	services []doctorService
 	agents   []doctorAgent
 	guardian doctorGuardian
@@ -34,6 +35,17 @@ type doctorReport struct {
 	metrics  doctorMetrics
 	fsChecks []doctorFSCheck
 	errors   []string
+}
+
+// doctorMode holds the runtime mode snapshot (ADR-044).
+type doctorMode struct {
+	Mode         string `json:"mode"`
+	Capabilities []struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Impact string `json:"impact"`
+		Reason string `json:"reason"`
+	} `json:"capabilities"`
 }
 
 type doctorService struct {
@@ -75,12 +87,25 @@ type doctorMetrics struct {
 
 // collect fetches all diagnostic signals.
 func (d *doctorReport) collect() {
+	fetchMode(d)
 	fetchServices(d)
 	fetchAgents(d)
 	fetchGuardian(d)
 	fetchSentinel(d)
 	fetchMetrics(d)
 	collectFS(d) // filesystem checks from cmd_doctor_fs.go
+}
+
+// fetchMode retrieves the runtime mode from GET /system/mode (ADR-044).
+func fetchMode(d *doctorReport) {
+	var result struct {
+		Data doctorMode `json:"data"`
+	}
+	if err := getJSON(d.addr+"/system/mode", &result); err != nil {
+		// mode endpoint missing = older engxd — not an error, just skip
+		return
+	}
+	d.mode = result.Data
 }
 
 func fetchServices(d *doctorReport) {
@@ -171,6 +196,7 @@ func (d *doctorReport) print() {
 	fmt.Println()
 	fmt.Println("  engx doctor — platform diagnosis")
 	fmt.Println("  " + strings.Repeat("─", 48))
+	printMode(d)
 	printDaemon(d)
 	printAgents(d)
 	printServices(d)
@@ -182,6 +208,38 @@ func (d *doctorReport) print() {
 	fmt.Println()
 	printSuggestions(d)
 	fmt.Println()
+}
+
+// printMode renders the runtime mode line (ADR-044).
+// Omitted silently if mode was not returned (older engxd).
+func printMode(d *doctorReport) {
+	if d.mode.Mode == "" {
+		return
+	}
+	switch d.mode.Mode {
+	case "full":
+		fmt.Println("  ✓ runtime-mode        full")
+	case "degraded":
+		// List which capabilities are degraded/disabled.
+		var missing []string
+		for _, c := range d.mode.Capabilities {
+			if c.Status != "enabled" {
+				missing = append(missing, c.Name+"="+c.Status)
+			}
+		}
+		fmt.Printf("  ○ runtime-mode        degraded — %s\n", strings.Join(missing, " "))
+	case "insecure":
+		// Find the reason from the identity capability.
+		reason := "identity capability disabled"
+		for _, c := range d.mode.Capabilities {
+			if c.Name == "identity" && c.Reason != "" {
+				reason = c.Reason
+				break
+			}
+		}
+		fmt.Printf("  ✗ runtime-mode        insecure — %s\n", reason)
+		fmt.Println("                        → start Gate: cd services/gate && ./gate &")
+	}
 }
 
 func printDaemon(d *doctorReport) {

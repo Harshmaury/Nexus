@@ -44,6 +44,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/controllers"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/eventbus"
+	"github.com/Harshmaury/Nexus/internal/mode"
 	"github.com/Harshmaury/Nexus/internal/sse"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/Harshmaury/Nexus/internal/telemetry"
@@ -158,6 +159,17 @@ func run(logger *log.Logger) error {
 	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	httpAddr := config.EnvOrDefault("NEXUS_HTTP_ADDR", config.DefaultHTTPAddr)
 	sseBroker := sse.NewBroker()
+
+	// ── 8a. RUNTIME MODE EVALUATOR (ADR-044) ─────────────────────────────────
+	modeEval := mode.NewEvaluator(mode.EvaluatorConfig{
+		GateAddr:        config.EnvOrDefault("GATE_HTTP_ADDR", "http://127.0.0.1:8088"),
+		GuardianAddr:    config.EnvOrDefault("GUARDIAN_HTTP_ADDR", "http://127.0.0.1:8085"),
+		SentinelAddr:    config.EnvOrDefault("SENTINEL_HTTP_ADDR", "http://127.0.0.1:8087"),
+		HasServiceToken: len(serviceTokens) > 0,
+		HasSSEBroker:    true,
+	})
+	logger.Printf(modeEval.ModeLogLine())
+
 	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	apiServer := api.NewServer(api.ServerConfig{
@@ -169,6 +181,7 @@ func run(logger *log.Logger) error {
 		ServiceTokens: serviceTokens, // ADR-008
 		SSEBroker:     sseBroker,     // Phase 16: ADR-015
 		DaemonVersion: daemonVersion, // Phase 22: binary version cross-check
+		ModeEvaluator: modeEval,      // Phase 23: ADR-044
 	})
 
 	// ── 9. WATCHER (drop folder + workspace — ADR-002) ────────────────────────

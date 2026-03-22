@@ -20,6 +20,7 @@ import (
 	"github.com/Harshmaury/Nexus/internal/api/middleware"
 	"github.com/Harshmaury/Nexus/internal/config"
 	"github.com/Harshmaury/Nexus/internal/controllers"
+	"github.com/Harshmaury/Nexus/internal/mode"
 	"github.com/Harshmaury/Nexus/internal/sse"
 	"github.com/Harshmaury/Nexus/internal/state"
 	"github.com/Harshmaury/Nexus/internal/telemetry"
@@ -37,8 +38,9 @@ type ServerConfig struct {
 	Metrics       *telemetry.Metrics
 	Logger        *log.Logger
 	ServiceTokens map[string]string
-	SSEBroker     *sse.Broker // Phase 16: nil = SSE disabled (ADR-015)
-	DaemonVersion string      // Phase 22: reported in GET /health for binary version check
+	SSEBroker     *sse.Broker          // Phase 16: nil = SSE disabled (ADR-015)
+	DaemonVersion string               // Phase 22: reported in GET /health for binary version check
+	ModeEvaluator *mode.Evaluator      // ADR-044: nil = mode endpoint disabled
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -117,6 +119,12 @@ func newRouter(cfg ServerConfig) http.Handler {
 	// ── Agent routes (Phase 14) ───────────────────────────────────────────────
 	mux.HandleFunc("GET  /system/graph",     systemH.Graph)
 	mux.HandleFunc("POST /system/validate",  systemH.Validate)
+
+	// ── Phase 23: runtime mode (ADR-044) ─────────────────────────────────────
+	if cfg.ModeEvaluator != nil {
+		modeH := handler.NewModeHandler(cfg.ModeEvaluator)
+		mux.HandleFunc("GET  /system/mode", modeH.Get)
+	}
 
 	mux.HandleFunc("GET  /agents",                  agentsH.List)
 	mux.HandleFunc("POST /agents/register",         agentsH.Register)
