@@ -16,6 +16,7 @@ import (
 	"crypto/subtle"
 	"log"
 	"net/http"
+	"os"
 
 	canon "github.com/Harshmaury/Canon/identity"
 )
@@ -35,7 +36,21 @@ func ServiceAuth(tokens map[string]string, logger *log.Logger) func(http.Handler
 	}
 
 	if len(tokens) == 0 {
-		logger.Println("WARNING: no service-tokens file found — inter-service auth disabled")
+		strict := os.Getenv("ENGX_AUTH_REQUIRED") == "true"
+		if strict {
+			logger.Println("WARNING: ENGX_AUTH_REQUIRED=true but no service-tokens loaded — all non-health requests will return 503")
+			return func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/health" {
+						next.ServeHTTP(w, r)
+						return
+					}
+					http.Error(w, `{"ok":false,"error":"service auth required but no tokens configured — set service-tokens and restart"}`,
+						http.StatusServiceUnavailable)
+				})
+			}
+		}
+		logger.Println("WARNING: !! no service-tokens file found — inter-service auth DISABLED !!\n  To enforce: set ENGX_AUTH_REQUIRED=true and populate ~/.nexus/service-tokens")
 		return func(next http.Handler) http.Handler { return next }
 	}
 

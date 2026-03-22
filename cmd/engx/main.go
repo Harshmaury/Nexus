@@ -79,6 +79,7 @@ func rootCmd() *cobra.Command {
 		activityCmd(&httpAddr),
 		psDetailCmd(&httpAddr),
 		historyCmd(),
+		uiCmd(&httpAddr),
 	)
 
 	// ── Hidden: advanced/internal commands (ADR-040) ─────────────────────

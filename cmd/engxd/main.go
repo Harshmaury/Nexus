@@ -74,10 +74,16 @@ func run(logger *log.Logger) error {
 	// If the file does not exist, serviceTokens is empty and auth is skipped.
 	serviceTokens, err := config.LoadServiceTokens(config.ServiceTokensPath)
 	if err != nil {
-		logger.Printf("WARNING: cannot load service-tokens: %v — running unauthenticated", err)
+		if os.Getenv("ENGX_AUTH_REQUIRED") == "true" {
+			logger.Fatalf("FATAL: ENGX_AUTH_REQUIRED=true but cannot load service-tokens: %v — refusing to start insecurely", err)
+		}
+		logger.Printf("WARNING: !! cannot load service-tokens: %v — running UNAUTHENTICATED !!\n  To enforce: set ENGX_AUTH_REQUIRED=true and populate ~/.nexus/service-tokens", err)
 		serviceTokens = map[string]string{}
 	} else if len(serviceTokens) == 0 {
-		logger.Println("WARNING: ~/.nexus/service-tokens not found — inter-service auth disabled")
+		if os.Getenv("ENGX_AUTH_REQUIRED") == "true" {
+			logger.Fatalf("FATAL: ENGX_AUTH_REQUIRED=true but ~/.nexus/service-tokens is empty — refusing to start insecurely. Populate ~/.nexus/service-tokens.")
+		}
+		logger.Println("WARNING: !! ~/.nexus/service-tokens not found — inter-service auth DISABLED !!\n  To enforce: set ENGX_AUTH_REQUIRED=true and populate ~/.nexus/service-tokens")
 	}
 
 	// ── 1b. BOOTSTRAP ~/.nexus/ DIRECTORY STRUCTURE ──────────────────────────
