@@ -3,7 +3,7 @@
 // Platform commands — start/stop/status for the full service fleet.
 // ADR-023: reset fail counts before start.
 // ADR-032: preflight registration check + --register flag.
-// F-4 fix: platformStatusCmd uses Herald instead of raw HTTP + anonymous struct.
+// v2.1.0: platformStartCmd migrated to plan model (ADR-043).
 package main
 
 import (
@@ -14,8 +14,8 @@ import (
 	"os"
 	"path/filepath"
 
-	herald "github.com/Harshmaury/Herald/client"
 	"github.com/Harshmaury/Nexus/internal/daemon"
+	"github.com/Harshmaury/Nexus/internal/plan"
 	"github.com/spf13/cobra"
 )
 
@@ -53,34 +53,17 @@ func platformCmd(socketPath, httpAddr *string) *cobra.Command {
 // ADR-023: resets fail counts first.
 // ADR-032: checks registration, auto-registers with --register flag.
 func platformStartCmd(socketPath, httpAddr *string) *cobra.Command {
-	var autoRegister bool
+	var autoRegister, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start all platform services",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// ADR-032: preflight registration check.
-			missing := checkPlatformRegistered(*httpAddr, platformProjects)
-			if len(missing) > 0 && !autoRegister {
-				for _, m := range missing {
-					fmt.Printf("  ✗ %s: not registered — run: engx register ~/workspace/projects/engx/services/%s\n", m, m)
-				}
-				fmt.Printf("\n  %d project(s) not registered.\n", len(missing))
-				fmt.Printf("  Register them first, or run: engx platform start --register\n\n")
-				return fmt.Errorf("platform not fully registered")
-			}
-			if autoRegister && len(missing) > 0 {
-				fmt.Printf("Auto-registering %d missing project(s)...\n", len(missing))
-				autoRegisterPlatform(*socketPath, *httpAddr, missing)
-			}
-			// ADR-023: reset before start.
-			resetPlatformServices(*httpAddr, platformServiceIDs)
-			fmt.Println("Starting platform services...")
-			return forEachProject(*socketPath, platformProjects,
-				daemon.CmdProjectStart, "started", "already running")
+			return runPlatformStart(*socketPath, *httpAddr, autoRegister, dryRun)
 		},
 	}
 	cmd.Flags().BoolVar(&autoRegister, "register", false,
 		"auto-register missing platform projects before starting")
+	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print execution plan without running")
 	return cmd
 }
 
@@ -101,20 +84,32 @@ func platformStatusCmd(socketPath, httpAddr *string) *cobra.Command {
 		Use:   "status",
 		Short: "Show status of all platform services",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c := herald.New(*httpAddr)
-			svcs, err := c.Services().List(context.Background())
+			resp, err := http.Get(*httpAddr + "/services")
 			if err != nil {
 				return fmt.Errorf("cannot reach engxd at %s: %w", *httpAddr, err)
 			}
+			defer resp.Body.Close()
+			var result struct {
+				Data []struct {
+					ID           string `json:"id"`
+					Name         string `json:"name"`
+					DesiredState string `json:"desired_state"`
+					ActualState  string `json:"actual_state"`
+					FailCount    int    `json:"fail_count"`
+				} `json:"data"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				return fmt.Errorf("decode: %w", err)
+			}
 			total, running := 0, 0
-			for _, svc := range svcs {
+			for _, svc := range result.Data {
 				total++
 				if svc.ActualState == "running" {
 					running++
 				}
 			}
 			fmt.Printf("Platform: %d/%d services running\n", running, total)
-			for _, svc := range svcs {
+			for _, svc := range result.Data {
 				ind := "●"
 				if svc.ActualState != "running" {
 					ind = "○"
@@ -124,6 +119,93 @@ func platformStatusCmd(socketPath, httpAddr *string) *cobra.Command {
 			}
 			return nil
 		},
+	}
+}
+
+
+// runPlatformStart builds and executes (or prints) the platform start plan.
+func runPlatformStart(socketPath, httpAddr string, autoRegister, dryRun bool) error {
+	cfg := plan.RunConfig{NexusAddr: httpAddr}
+	p := buildPlatformStartPlan(socketPath, httpAddr, autoRegister)
+	if dryRun {
+		plan.Print(p, os.Stdout)
+		return nil
+	}
+	return plan.Run(context.Background(), p, os.Stdout, cfg)
+}
+
+// buildPlatformStartPlan constructs the platform start plan.
+func buildPlatformStartPlan(socketPath, httpAddr string, autoRegister bool) *plan.Plan {
+	return plan.Build("platform:start", []*plan.Step{
+		{Label: "Checking registration", Kind: plan.KindValidate, Run: stepCheckRegistration(socketPath, httpAddr, autoRegister)},
+		{Label: "Resetting services",    Kind: plan.KindExecute,  Run: stepResetServices(httpAddr)},
+		{Label: "Starting services",     Kind: plan.KindExecute,  Run: stepStartAllProjects(socketPath)},
+		{Label: "Waiting for platform",  Kind: plan.KindWait,     Run: stepWaitPlatform(httpAddr)},
+	})
+}
+
+func stepCheckRegistration(socketPath, httpAddr string, autoRegister bool) plan.StepFunc {
+	return func(_ context.Context) plan.StepResult {
+		missing := checkPlatformRegistered(httpAddr, platformProjects)
+		if len(missing) == 0 {
+			return plan.StepResult{OK: true, Detail: "all projects registered"}
+		}
+		if !autoRegister {
+			return plan.StepResult{OK: false, Err: &plan.UserError{
+				What: fmt.Sprintf("%d project(s) not registered", len(missing)),
+				Why:  fmt.Sprintf("missing: %v", missing),
+				NextStep: "engx platform start --register",
+			}}
+		}
+		autoRegisterPlatform(socketPath, httpAddr, missing)
+		return plan.StepResult{OK: true, Detail: fmt.Sprintf("registered %d project(s)", len(missing))}
+	}
+}
+
+func stepResetServices(httpAddr string) plan.StepFunc {
+	return func(_ context.Context) plan.StepResult {
+		resetPlatformServices(httpAddr, platformServiceIDs)
+		return plan.StepResult{OK: true, Detail: "fail counts reset"}
+	}
+}
+
+func stepStartAllProjects(socketPath string) plan.StepFunc {
+	return func(_ context.Context) plan.StepResult {
+		started := 0
+		for _, proj := range platformProjects {
+			resp, err := sendCommand(socketPath, daemon.CmdProjectStart,
+				daemon.ProjectStartParams{ProjectID: proj})
+			if err != nil {
+				continue
+			}
+			var r map[string]any
+			_ = json.Unmarshal(resp.Data, &r)
+			if q, _ := r["queued"].(float64); int(q) > 0 {
+				started++
+			}
+		}
+		return plan.StepResult{OK: true, Detail: fmt.Sprintf("queued %d/%d projects", started, len(platformProjects))}
+	}
+}
+
+func stepWaitPlatform(httpAddr string) plan.StepFunc {
+	return func(_ context.Context) plan.StepResult {
+		running, total := 0, 0
+		for _, proj := range platformProjects {
+			r, t, err := projectServiceStates(httpAddr, proj)
+			if err != nil {
+				continue
+			}
+			running += r
+			total += t
+		}
+		if running == total && total > 0 {
+			return plan.StepResult{OK: true,
+				Message: fmt.Sprintf("%d/%d ✓", running, total),
+				Detail:  fmt.Sprintf("%d/%d services running", running, total)}
+		}
+		return plan.StepResult{OK: true, Skip: true,
+			Message: fmt.Sprintf("%d/%d running (check: engx ps)", running, total)}
 	}
 }
 

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Harshmaury/Nexus/internal/plan"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +22,7 @@ import (
 
 func buildCmd(httpAddr *string) *cobra.Command {
 	var forgeAddr, lang, projectPath string
+	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "build <project-id>",
 		Short: "Build a project via Forge",
@@ -28,25 +31,17 @@ func buildCmd(httpAddr *string) *cobra.Command {
 			target := args[0]
 			if projectPath == "" || lang == "" {
 				if resolved := resolveProjectMeta(target, projectPath, lang); resolved != nil {
-					if projectPath == "" {
-						projectPath = resolved.dir
-					}
-					if lang == "" {
-						lang = resolved.language
-					}
+					if projectPath == "" { projectPath = resolved.dir }
+					if lang == ""        { lang = resolved.language }
 				}
 			}
-			fmt.Printf("Building %s...\n", target)
-			result, err := forgeCommand(forgeAddr, "build", target, lang, projectPath)
-			if err != nil {
-				return err
-			}
-			return printForgeResult(result)
+			return runBuildPlan(forgeAddr, target, lang, projectPath, dryRun)
 		},
 	}
 	cmd.Flags().StringVar(&forgeAddr, "forge", "http://127.0.0.1:8082", "Forge HTTP address")
 	cmd.Flags().StringVarP(&lang, "language", "l", "", "project language — auto-detected if omitted")
 	cmd.Flags().StringVar(&projectPath, "path", "", "project path — auto-resolved if omitted")
+	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print execution plan without running")
 	return cmd
 }
 
@@ -300,4 +295,35 @@ func resolveProjectMeta(target, hintPath, hintLang string) *projectInfo {
 		}
 	}
 	return nil
+}
+
+// runBuildPlan builds and executes (or prints) the build plan.
+func runBuildPlan(forgeAddr, target, lang, projectPath string, dryRun bool) error {
+	p := plan.Build("build:"+target, []*plan.Step{
+		{
+			Label: "Building",
+			Kind:  plan.KindExecute,
+			Run: func(_ context.Context) plan.StepResult {
+				result, err := forgeCommand(forgeAddr, "build", target, lang, projectPath)
+				if err != nil {
+					return plan.StepResult{OK: false, Err: &plan.UserError{
+						What:     fmt.Sprintf("build failed for %q", target),
+						Where:    "forge",
+						Why:      err.Error(),
+						NextStep: fmt.Sprintf("engx logs %s-daemon", target),
+					}}
+				}
+				if err := printForgeResult(result); err != nil {
+					return plan.StepResult{OK: false, Err: &plan.UserError{What: err.Error()}}
+				}
+				return plan.StepResult{OK: true, Detail: "build complete"}
+			},
+		},
+	})
+	if dryRun {
+		plan.Print(p, os.Stdout)
+		return nil
+	}
+	cfg := plan.RunConfig{}
+	return plan.Run(context.Background(), p, os.Stdout, cfg)
 }
