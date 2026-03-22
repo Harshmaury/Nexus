@@ -285,3 +285,105 @@ func printSSELine(line string) {
 	}
 	fmt.Printf("[%s] %s\n", ts, data)
 }
+
+// ── LOGS --SINCE-CRASH ────────────────────────────────────────────────────────
+
+// logsSinceCrashCmd shows log output starting from the last crash timestamp.
+// Registered as a flag on logsFollowCmd — see logsFollowCmd() in this file.
+// Also exported as a standalone helper used by cmd_run.go.
+
+// fetchLastCrashMessage returns the crash message from the most recent
+// SERVICE_CRASHED event for serviceID. Returns "" if none found or Nexus
+// is unavailable. Used by stepWait to surface crash reason inline.
+func fetchLastCrashMessage(httpAddr, serviceID string) string {
+	var result struct {
+		Data []struct {
+			Type      string `json:"type"`
+			ServiceID string `json:"service_id"`
+			Outcome   string `json:"outcome"`
+			Payload   string `json:"payload"`
+		} `json:"data"`
+	}
+	url := fmt.Sprintf("%s/events?limit=20", httpAddr)
+	if err := getJSON(url, &result); err != nil {
+		return ""
+	}
+	for _, e := range result.Data {
+		if e.Type == "SERVICE_CRASHED" && e.ServiceID == serviceID {
+			if e.Outcome != "" {
+				return e.Outcome
+			}
+			return "service crashed — check engx logs " + serviceID
+		}
+	}
+	return ""
+}
+
+// fetchLastCrashTime returns the timestamp of the most recent SERVICE_CRASHED
+// event for serviceID. Returns zero time if none found.
+func fetchLastCrashTime(httpAddr, serviceID string) time.Time {
+	var result struct {
+		Data []struct {
+			Type      string    `json:"type"`
+			ServiceID string    `json:"service_id"`
+			CreatedAt time.Time `json:"created_at"`
+		} `json:"data"`
+	}
+	url := fmt.Sprintf("%s/events?limit=50", httpAddr)
+	if err := getJSON(url, &result); err != nil {
+		return time.Time{}
+	}
+	for _, e := range result.Data {
+		if e.Type == "SERVICE_CRASHED" && e.ServiceID == serviceID {
+			return e.CreatedAt
+		}
+	}
+	return time.Time{}
+}
+
+// printLogSinceCrash prints log lines for serviceID starting from the
+// last crash timestamp. Falls back to last N lines if no crash recorded.
+func printLogSinceCrash(serviceID string, fallbackLines int) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("home dir: %w", err)
+	}
+	logPath := filepath.Join(home, ".nexus", "logs", serviceID+".log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no log for %q — has the service started?", serviceID)
+		}
+		return fmt.Errorf("read log: %w", err)
+	}
+
+	crashTime := fetchLastCrashTime("http://127.0.0.1:8080", serviceID)
+	if crashTime.IsZero() {
+		fmt.Printf("  No crash recorded for %q — showing last %d lines\n\n", serviceID, fallbackLines)
+		return printLastLines(string(data), fallbackLines)
+	}
+
+	fmt.Printf("  Showing logs from last crash (%s)\n", crashTime.Format("15:04:05"))
+	fmt.Println("  " + strings.Repeat("─", 48))
+
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	// Find the first line at or after the crash timestamp.
+	// Log lines begin with the service name and timestamp e.g. "[atlas] 2026/03/22 12:10:03"
+	startIdx := 0
+	crashStr := crashTime.Format("2006/01/02 15:04:05")
+	for i, line := range lines {
+		if strings.Contains(line, crashStr[:16]) { // match YYYY/MM/DD HH:MM
+			startIdx = i
+			break
+		}
+	}
+
+	shown := lines[startIdx:]
+	if len(shown) > 80 {
+		shown = shown[:80]
+	}
+	for _, line := range shown {
+		fmt.Println(line)
+	}
+	return nil
+}

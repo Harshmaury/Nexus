@@ -175,6 +175,10 @@ func stepWait(httpAddr, id string, timeoutSecs int) plan.StepFunc {
 				if s.failCount > 0 {
 					why = fmt.Sprintf("failed %d time(s) — likely bad binary or config", s.failCount)
 				}
+				// Fetch last crash message for a specific failure reason.
+				if crashMsg := fetchLastCrashMessage(httpAddr, s.id); crashMsg != "" {
+					why = crashMsg
+				}
 				return plan.StepResult{
 					OK: false,
 					Err: &plan.UserError{

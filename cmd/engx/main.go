@@ -74,6 +74,11 @@ func rootCmd() *cobra.Command {
 		loginCmd(),
 		logoutCmd(),
 		whoamiCmd(),
+		// ── Developer insight commands ──────────────────────────────────────
+		whyCmd(&httpAddr),
+		activityCmd(&httpAddr),
+		psDetailCmd(&httpAddr),
+		historyCmd(),
 	)
 
 	// ── Hidden: advanced/internal commands (ADR-040) ─────────────────────

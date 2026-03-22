@@ -105,6 +105,7 @@ func printProjectGuardian(id string) {
 				RuleID   string `json:"rule_id"`
 				Target   string `json:"target"`
 				Message  string `json:"message"`
+				Severity string `json:"severity"`
 			} `json:"findings"`
 		} `json:"data"`
 	}
@@ -112,19 +113,38 @@ func printProjectGuardian(id string) {
 		fmt.Println("  guardian: unavailable")
 		return
 	}
-	var mine []struct{ RuleID, Message string }
+	var errors, warnings, info int
 	for _, f := range result.Data.Findings {
-		if f.Target == id {
-			mine = append(mine, struct{ RuleID, Message string }{f.RuleID, f.Message})
+		if f.Target != id {
+			continue
+		}
+		switch f.Severity {
+		case "error":
+			fmt.Printf("  ✗ %-12s %s\n", f.RuleID, truncate(f.Message, 65))
+			errors++
+		case "warning":
+			fmt.Printf("  ○ %-12s %s\n", f.RuleID, truncate(f.Message, 65))
+			warnings++
+		case "info":
+			fmt.Printf("  · %-12s %s\n", f.RuleID, truncate(f.Message, 65))
+			info++
 		}
 	}
-	if len(mine) == 0 {
-		fmt.Println("✓ guardian: no findings for this project")
-		return
+	if errors+warnings+info == 0 {
+		fmt.Println("  ✓ guardian      no findings")
 	}
-	fmt.Printf("○ guardian: %d finding(s)\n", len(mine))
-	for _, f := range mine {
-		fmt.Printf("  [%s] %s\n", f.RuleID, truncate(f.Message, 70))
+
+	// Verdict
+	fmt.Println()
+	fmt.Println("  " + strings.Repeat("─", 48))
+	switch {
+	case errors > 0:
+		fmt.Printf("  Verdict: NEEDS ATTENTION (%d error(s))\n", errors)
+		fmt.Printf("  → run: engx why %s\n", id)
+	case warnings > 0:
+		fmt.Printf("  Verdict: WARNINGS (%d warning(s))\n", warnings)
+	default:
+		fmt.Println("  Verdict: HEALTHY")
 	}
 }
 
@@ -260,11 +280,13 @@ func forgeCommand(httpAddr, intent, target, language, projectPath string) (map[s
 }
 
 // printForgeResult formats a Forge ExecutionResult for the terminal.
+// On failure, fetches Guardian context for the target project.
 func printForgeResult(r map[string]any) error {
 	success, _ := r["success"].(bool)
 	duration, _ := r["duration"].(string)
 	output, _ := r["output"].(string)
 	errMsg, _ := r["error"].(string)
+	target, _ := r["target"].(string)
 	if success {
 		fmt.Printf("✓ success in %s\n", duration)
 		if output != "" {
@@ -276,7 +298,33 @@ func printForgeResult(r map[string]any) error {
 	if errMsg != "" {
 		fmt.Println(errMsg)
 	}
+	// Surface Guardian context for this project at the moment of failure.
+	if target != "" {
+		printBuildFailureContext(target)
+	}
 	return fmt.Errorf("build failed")
+}
+
+// printBuildFailureContext prints relevant Guardian findings after a build failure.
+// Only shows error/warning findings for the target — never info.
+func printBuildFailureContext(target string) {
+	findings := fetchGuardianFindingsForProject(target)
+	if len(findings) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println("  Guardian context:")
+	for _, f := range findings {
+		if f.Severity == "info" {
+			continue
+		}
+		icon := "○"
+		if f.Severity == "error" {
+			icon = "✗"
+		}
+		fmt.Printf("  %s [%s] %s\n", icon, f.RuleID, truncate(f.Message, 65))
+	}
+	fmt.Printf("  → run: engx check %s\n", target)
 }
 
 // resolveProjectMeta finds path and language for a project by reading .nexus.yaml.

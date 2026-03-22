@@ -14,12 +14,16 @@ import (
 
 func logsCmd() *cobra.Command {
 	var lines int
+	var sinceCrash bool
 	cmd := &cobra.Command{
 		Use:   "logs <service-id>",
 		Short: "Tail the log for a platform service (--follow for real-time)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
+			if sinceCrash {
+				return printLogSinceCrash(id, lines)
+			}
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return fmt.Errorf("home dir: %w", err)
@@ -36,6 +40,7 @@ func logsCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVarP(&lines, "lines", "n", 40, "number of lines to show")
+	cmd.Flags().BoolVar(&sinceCrash, "since-crash", false, "show logs from the last crash timestamp")
 	return cmd
 }
 
