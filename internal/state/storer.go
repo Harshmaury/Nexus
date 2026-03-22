@@ -35,7 +35,7 @@ type Storer interface {
 	GetServicesReadyToRestart() ([]*Service, error)
 
 	// ── Events ───────────────────────────────────────────────
-	AppendEvent(serviceID string, eventType EventType, source EventSource, traceID, spanID, parentSpanID, component, level, outcome, payload string) error // ADR-037
+	AppendEvent(serviceID string, eventType EventType, source EventSource, traceID, spanID, parentSpanID, component, level, outcome, payload, actor string) error // ADR-037, ADR-042
 	GetRecentEvents(limit int) ([]*Event, error)
 	GetEventsByTrace(traceID string) ([]*Event, error)
 	GetEventsSince(sinceID int64, limit int) ([]*Event, error)

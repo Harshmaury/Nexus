@@ -123,6 +123,7 @@ type Event struct {
 	Component    string      `json:"component"`
 	Outcome      string      `json:"outcome"`
 	Payload      string      `json:"payload"`
+	Actor        string      `json:"actor,omitempty"` // Gate subject — empty for system events (ADR-042)
 	CreatedAt    time.Time   `json:"created_at"`
 }
 
@@ -378,10 +379,10 @@ func (s *Store) GetServicesReadyToRestart() ([]*Service, error) {
 // AppendEvent writes an immutable event with source, trace ID, component, and outcome.
 // Phase 15: component identifies the platform domain (nexus|atlas|forge|drop|system).
 // outcome records the action result (success|failure|deferred|"" for informational events).
-func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventSource, traceID, spanID, parentSpanID, component, level, outcome, payload string) error {
+func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventSource, traceID, spanID, parentSpanID, component, level, outcome, payload, actor string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO events (service_id, type, source, trace_id, span_id, parent_span_id, level, component, outcome, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		serviceID, eventType, source, traceID, spanID, parentSpanID, level, component, outcome, payload, time.Now().UTC(),
+		`INSERT INTO events (service_id, type, source, trace_id, span_id, parent_span_id, level, component, outcome, payload, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		serviceID, eventType, source, traceID, spanID, parentSpanID, level, component, outcome, payload, actor, time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("append event %s for %s: %w", eventType, serviceID, err)
@@ -392,7 +393,7 @@ func (s *Store) AppendEvent(serviceID string, eventType EventType, source EventS
 // GetRecentEvents returns the N most recent events.
 func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	rows, err := s.db.Query(
-		`SELECT id, service_id, type, source, trace_id, span_id, parent_span_id, level, component, outcome, payload, created_at
+		`SELECT id, service_id, type, source, trace_id, span_id, parent_span_id, level, component, outcome, payload, actor, created_at
 		 FROM events ORDER BY created_at DESC LIMIT ?`,
 		limit,
 	)
@@ -404,7 +405,7 @@ func (s *Store) GetRecentEvents(limit int) ([]*Event, error) {
 	var events []*Event
 	for rows.Next() {
 		e := &Event{}
-		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.SpanID, &e.ParentSpanID, &e.Level, &e.Component, &e.Outcome, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ServiceID, &e.Type, &e.Source, &e.TraceID, &e.SpanID, &e.ParentSpanID, &e.Level, &e.Component, &e.Outcome, &e.Payload, &e.Actor, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		events = append(events, e)
@@ -723,6 +724,7 @@ var allMigrations = []schemaVersion{
 	{6, `ALTER TABLE events ADD COLUMN parent_span_id TEXT NOT NULL DEFAULT ''`},
 	{6, `CREATE INDEX IF NOT EXISTS idx_events_level   ON events(level)`},
 	{6, `CREATE INDEX IF NOT EXISTS idx_events_span_id ON events(span_id)`},
+	{7, `ALTER TABLE events ADD COLUMN actor TEXT NOT NULL DEFAULT ''`}, // ADR-042: Gate identity attribution
 }
 
 // checkIntegrity runs PRAGMA integrity_check on the open database.
