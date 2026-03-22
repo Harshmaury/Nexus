@@ -50,6 +50,7 @@ type StepKind int
 
 const (
 	KindValidate StepKind = iota // pre-flight check — fail-hard on deny
+	KindEnforce                  // architectural gate — fail-hard on violation (ADR-047)
 	KindExecute                  // service call with expected side effect
 	KindWait                     // poll loop until condition met or timeout
 	KindObserve                  // read-only check — fail-open (warn, continue)
@@ -60,6 +61,8 @@ func (k StepKind) String() string {
 	switch k {
 	case KindValidate:
 		return "validate"
+	case KindEnforce:
+		return "enforce"
 	case KindExecute:
 		return "execute"
 	case KindWait:

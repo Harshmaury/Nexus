@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	arbiter "github.com/Harshmaury/Arbiter/api"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/plan"
 	"github.com/spf13/cobra"
@@ -27,24 +28,26 @@ import (
 func runCmd(socketPath, httpAddr *string) *cobra.Command {
 	var timeout int
 	var dryRun bool
+	var skipEnforce bool
 	cmd := &cobra.Command{
 		Use:   "run <project>",
 		Short: "Start a project and confirm it is running",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
-			return runProject(*socketPath, *httpAddr, id, timeout, dryRun)
+			return runProject(*socketPath, *httpAddr, id, timeout, dryRun, skipEnforce)
 		},
 	}
 	cmd.Flags().IntVarP(&timeout, "timeout", "t", 60, "seconds to wait for running state")
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print execution plan without running")
+	cmd.Flags().BoolVar(&skipEnforce, "skip-enforce", false, "bypass Arbiter gate (audit logged)")
 	return cmd
 }
 
 // runProject builds and executes (or prints) the run plan for project id.
-func runProject(socketPath, httpAddr, id string, timeoutSecs int, dryRun bool) error {
+func runProject(socketPath, httpAddr, id string, timeoutSecs int, dryRun bool, skipEnforce bool) error {
 	cfg := plan.RunConfig{NexusAddr: httpAddr}
-	p := buildRunPlan(socketPath, httpAddr, id, timeoutSecs)
+	p := buildRunPlan(socketPath, httpAddr, id, timeoutSecs, skipEnforce)
 	if dryRun {
 		plan.Print(p, os.Stdout)
 		return nil
@@ -54,12 +57,17 @@ func runProject(socketPath, httpAddr, id string, timeoutSecs int, dryRun bool) e
 
 // buildRunPlan constructs the four-step run plan.
 // Construction is pure — no service calls made here.
-func buildRunPlan(socketPath, httpAddr, id string, timeoutSecs int) *plan.Plan {
+func buildRunPlan(socketPath, httpAddr, id string, timeoutSecs int, skipEnforce bool) *plan.Plan {
 	return plan.Build("run:"+id, []*plan.Step{
 		{
 			Label: "Validating",
 			Kind:  plan.KindValidate,
 			Run:   stepValidate(httpAddr, id),
+		},
+		{
+			Label: "Enforcing",
+			Kind:  plan.KindEnforce,
+			Run:   stepEnforce(httpAddr, id, skipEnforce),
 		},
 		{
 			Label: "Starting",

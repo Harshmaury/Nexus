@@ -1,11 +1,9 @@
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
-github.com/Harshmaury/Accord v0.1.6 h1:ZWMemy19UU7PuQFd5ePoDeb6FJRz+xmJTzBNuWSzYQc=
-github.com/Harshmaury/Accord v0.1.6/go.mod h1:HfmELXykJvkZTOuQjiK03f4NUN0i0CBIHk/67flr+yc=
+github.com/Harshmaury/Arbiter v0.0.0-20260322151248-152c9c516c55 h1:N27Eeh9nb0qJSM7nWshS5Bs3g7wNQjkiUBTH3lOf8aQ=
+github.com/Harshmaury/Arbiter v0.0.0-20260322151248-152c9c516c55/go.mod h1:uI2UJmdqqEf0pkNuQ6rliGCRxoDQWtU2Fj0R7Ru7FTI=
 github.com/Harshmaury/Canon v0.4.1 h1:BvWzAfGFhFjmCrILEEYIN0f0f/VHewNorgVCKhWv2Cw=
 github.com/Harshmaury/Canon v0.4.1/go.mod h1:yGNa8zeXP3JP7uFJusFJeyeNY+w0PnnIJAu2wLuawfE=
-github.com/Harshmaury/Herald v0.1.6-0.20260321163732-3ed099eda6cd h1:vm/rKlb1c4tr5hbtmZUK71K57t1w3/oGhn9X/CDm0+o=
-github.com/Harshmaury/Herald v0.1.6-0.20260321163732-3ed099eda6cd/go.mod h1:PdGI7kDm28E8kptCRid5x3Rxfl2oVHaYfmibPG8MCWM=
 github.com/Microsoft/go-winio v0.4.21 h1:+6mVbXh4wPzUrl1COX9A+ZCvEpYsOBZ6/+kwDnvLyro=
 github.com/Microsoft/go-winio v0.4.21/go.mod h1:JPGBdM1cNvN/6ISo+n8V5iA4v8pBzdOpzfwIujj1a84=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
