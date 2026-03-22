@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	arbiter "github.com/Harshmaury/Arbiter/api"
 	"github.com/Harshmaury/Nexus/internal/daemon"
 	"github.com/Harshmaury/Nexus/internal/plan"
 	"github.com/spf13/cobra"
