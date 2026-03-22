@@ -1,5 +1,14 @@
 // @nexus-project: nexus
 // @nexus-path: pkg/events/topics.go
+// DEPRECATED (ADR-045): All types and constants in this package have been
+// migrated to github.com/Harshmaury/Canon/events. Import from Canon instead.
+//
+//   Before: import nexusevents "github.com/Harshmaury/Nexus/pkg/events"
+//   After:  import canonevents "github.com/Harshmaury/Canon/events"
+//
+// This package is retained for backward compatibility only and will be
+// removed in the next Nexus major version.
+//
 // Package events exposes platform event topic constants for cross-module
 // consumers such as Atlas and Forge.
 //
