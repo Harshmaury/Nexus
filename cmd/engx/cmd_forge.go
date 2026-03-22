@@ -22,7 +22,6 @@ import (
 
 func buildCmd(httpAddr *string) *cobra.Command {
 	var forgeAddr, lang, projectPath string
-	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "build <project-id>",
 		Short: "Build a project via Forge",
@@ -31,17 +30,25 @@ func buildCmd(httpAddr *string) *cobra.Command {
 			target := args[0]
 			if projectPath == "" || lang == "" {
 				if resolved := resolveProjectMeta(target, projectPath, lang); resolved != nil {
-					if projectPath == "" { projectPath = resolved.dir }
-					if lang == ""        { lang = resolved.language }
+					if projectPath == "" {
+						projectPath = resolved.dir
+					}
+					if lang == "" {
+						lang = resolved.language
+					}
 				}
 			}
-			return runBuildPlan(forgeAddr, target, lang, projectPath, dryRun)
+			fmt.Printf("Building %s...\n", target)
+			result, err := forgeCommand(forgeAddr, "build", target, lang, projectPath)
+			if err != nil {
+				return err
+			}
+			return printForgeResult(result)
 		},
 	}
 	cmd.Flags().StringVar(&forgeAddr, "forge", "http://127.0.0.1:8082", "Forge HTTP address")
 	cmd.Flags().StringVarP(&lang, "language", "l", "", "project language — auto-detected if omitted")
 	cmd.Flags().StringVar(&projectPath, "path", "", "project path — auto-resolved if omitted")
-	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print execution plan without running")
 	return cmd
 }
 
@@ -49,19 +56,19 @@ func buildCmd(httpAddr *string) *cobra.Command {
 
 func checkCmd(httpAddr *string) *cobra.Command {
 	var atlasAddr, token string
+	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "check <project-id>",
 		Short: "Check a project's health — capabilities, status, Guardian findings",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
-			printProjectAtlas(atlasAddr, token, id)
-			printProjectGuardian(id)
-			return nil
+			return runCheckPlan(atlasAddr, token, id, dryRun)
 		},
 	}
 	cmd.Flags().StringVar(&atlasAddr, "atlas", "http://127.0.0.1:8081", "Atlas HTTP address")
 	cmd.Flags().StringVar(&token, "token", "", "X-Service-Token (if auth is enabled)")
+	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print execution plan without running")
 	return cmd
 }
 
@@ -297,26 +304,23 @@ func resolveProjectMeta(target, hintPath, hintLang string) *projectInfo {
 	return nil
 }
 
-// runBuildPlan builds and executes (or prints) the build plan.
-func runBuildPlan(forgeAddr, target, lang, projectPath string, dryRun bool) error {
-	p := plan.Build("build:"+target, []*plan.Step{
+// runCheckPlan builds and executes (or prints) the check plan.
+func runCheckPlan(atlasAddr, token, id string, dryRun bool) error {
+	p := plan.Build("check:"+id, []*plan.Step{
 		{
-			Label: "Building",
-			Kind:  plan.KindExecute,
+			Label: "Atlas status",
+			Kind:  plan.KindObserve,
 			Run: func(_ context.Context) plan.StepResult {
-				result, err := forgeCommand(forgeAddr, "build", target, lang, projectPath)
-				if err != nil {
-					return plan.StepResult{OK: false, Err: &plan.UserError{
-						What:     fmt.Sprintf("build failed for %q", target),
-						Where:    "forge",
-						Why:      err.Error(),
-						NextStep: fmt.Sprintf("engx logs %s-daemon", target),
-					}}
-				}
-				if err := printForgeResult(result); err != nil {
-					return plan.StepResult{OK: false, Err: &plan.UserError{What: err.Error()}}
-				}
-				return plan.StepResult{OK: true, Detail: "build complete"}
+				printProjectAtlas(atlasAddr, token, id)
+				return plan.StepResult{OK: true, Detail: "atlas queried"}
+			},
+		},
+		{
+			Label: "Guardian findings",
+			Kind:  plan.KindObserve,
+			Run: func(_ context.Context) plan.StepResult {
+				printProjectGuardian(id)
+				return plan.StepResult{OK: true, Detail: "guardian queried"}
 			},
 		},
 	})
