@@ -1,7 +1,7 @@
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
-github.com/Harshmaury/Accord v0.1.3-0.20260321163615-66757304a6fd h1:tl6EqbDJE0mF60ZXME2Fw16FsuJt65YfO96k/YATLyE=
-github.com/Harshmaury/Accord v0.1.3-0.20260321163615-66757304a6fd/go.mod h1:HfmELXykJvkZTOuQjiK03f4NUN0i0CBIHk/67flr+yc=
+github.com/Harshmaury/Accord v0.1.6 h1:ZWMemy19UU7PuQFd5ePoDeb6FJRz+xmJTzBNuWSzYQc=
+github.com/Harshmaury/Accord v0.1.6/go.mod h1:HfmELXykJvkZTOuQjiK03f4NUN0i0CBIHk/67flr+yc=
 github.com/Harshmaury/Canon v0.4.1 h1:BvWzAfGFhFjmCrILEEYIN0f0f/VHewNorgVCKhWv2Cw=
 github.com/Harshmaury/Canon v0.4.1/go.mod h1:yGNa8zeXP3JP7uFJusFJeyeNY+w0PnnIJAu2wLuawfE=
 github.com/Harshmaury/Herald v0.1.6-0.20260321163732-3ed099eda6cd h1:vm/rKlb1c4tr5hbtmZUK71K57t1w3/oGhn9X/CDm0+o=

@@ -71,6 +71,9 @@ func rootCmd() *cobra.Command {
 		projectCmd(&socketPath),
 		upgradeCmd(&httpAddr),
 		versionCmd(),
+		loginCmd(),
+		logoutCmd(),
+		whoamiCmd(),
 	)
 
 	// ── Hidden: advanced/internal commands (ADR-040) ─────────────────────

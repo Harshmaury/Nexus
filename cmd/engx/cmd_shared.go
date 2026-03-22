@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	canon "github.com/Harshmaury/Canon/identity"
@@ -90,6 +91,83 @@ func getJSONWithToken(url, token string, out any) error {
 	}
 	if token != "" {
 		req.Header.Set(canon.ServiceTokenHeader, token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+
+// ── IDENTITY TOKEN ────────────────────────────────────────────────────────────
+
+const identityTokenFile = ".nexus/identity"
+
+// identityTokenPath returns the path to the stored Gate identity token.
+func identityTokenPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, identityTokenFile)
+}
+
+// loadIdentityToken reads the stored Gate identity token from ~/.nexus/identity.
+// Returns empty string if no token is stored — anonymous operation continues normally.
+func loadIdentityToken() string {
+	path := identityTokenPath()
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// saveIdentityToken writes a Gate identity token to ~/.nexus/identity.
+func saveIdentityToken(token string) error {
+	path := identityTokenPath()
+	if path == "" {
+		return fmt.Errorf("cannot determine home directory")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create .nexus dir: %w", err)
+	}
+	return os.WriteFile(path, []byte(token), 0600)
+}
+
+// removeIdentityToken deletes the stored identity token (logout).
+func removeIdentityToken() error {
+	path := identityTokenPath()
+	if path == "" {
+		return nil
+	}
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// getJSONWithIdentity performs a GET request carrying both the service token
+// and the stored identity token (X-Identity-Token) if one exists.
+func getJSONWithIdentity(url, serviceToken string, out any) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if serviceToken != "" {
+		req.Header.Set(canon.ServiceTokenHeader, serviceToken)
+	}
+	if idToken := loadIdentityToken(); idToken != "" {
+		req.Header.Set(canon.IdentityTokenHeader, idToken)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
