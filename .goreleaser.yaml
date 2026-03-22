@@ -59,15 +59,15 @@ builds:
 # ── ARCHIVES ──────────────────────────────────────────────────────────────────
 archives:
   - id: default
-    builds: [engxd-linux, engx-linux-windows, engxa-linux-windows]
+    ids: [engxd-linux, engx-linux-windows, engxa-linux-windows]
     # Naming contract — matched by internal/upgrade/release.go and scripts/install.sh
     name_template: "engx-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     wrap_in_directory: false
     allow_different_binary_count: true
-    format: tar.gz
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
     files:
       - LICENSE
       - README.md
