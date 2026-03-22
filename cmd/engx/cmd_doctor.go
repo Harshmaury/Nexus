@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -62,9 +63,11 @@ type doctorAgent struct {
 }
 
 type doctorGuardian struct {
-	Total    int
-	Warnings int
-	Errors   int
+	Total              int
+	Warnings           int
+	Errors             int
+	IsStale            bool
+	StaleSinceSeconds  float64 // seconds since staleness began
 	Findings []struct {
 		RuleID   string `json:"rule_id"`
 		Target   string `json:"target"`
@@ -143,16 +146,25 @@ func fetchGuardian(d *doctorReport) {
 				Message  string `json:"message"`
 				Severity string `json:"severity"`
 			} `json:"findings"`
+			IsStale    bool    `json:"is_stale"`
+			StaleSince *string `json:"stale_since,omitempty"`
 		} `json:"data"`
 	}
 	if err := getJSON("http://127.0.0.1:8085/guardian/findings", &result); err != nil {
 		d.errors = append(d.errors, "guardian: "+err.Error())
+		d.guardian.IsStale = true // unreachable = treat as stale
 		return
 	}
 	d.guardian.Total = result.Data.Summary.Total
 	d.guardian.Warnings = result.Data.Summary.Warnings
 	d.guardian.Errors = result.Data.Summary.Errors
 	d.guardian.Findings = result.Data.Findings
+	d.guardian.IsStale = result.Data.IsStale
+	if result.Data.IsStale && result.Data.StaleSince != nil {
+		if t, err := time.Parse(time.RFC3339, *result.Data.StaleSince); err == nil {
+			d.guardian.StaleSinceSeconds = time.Since(t).Seconds()
+		}
+	}
 }
 
 func fetchSentinel(d *doctorReport) {
@@ -301,14 +313,26 @@ func printServices(d *doctorReport) {
 }
 
 func printGuardian(d *doctorReport) {
-	if d.guardian.Total == 0 {
+	// Staleness check — Guardian down or not evaluated recently.
+	if d.guardian.IsStale {
+		if d.guardian.StaleSinceSeconds > 0 {
+			fmt.Printf("  ○ guardian            stale — last eval %s ago (findings may be outdated)\n",
+				formatUptimeSeconds(d.guardian.StaleSinceSeconds))
+		} else {
+			fmt.Println("  ○ guardian            stale or unreachable (findings may be outdated)")
+		}
+		fmt.Println("                        → check guardian is running: engx run guardian")
+	}
+	if d.guardian.Total == 0 && !d.guardian.IsStale {
 		fmt.Println("  ✓ guardian            no findings")
 		return
 	}
-	fmt.Printf("  ○ guardian            %d finding(s) — %d warnings %d errors\n",
-		d.guardian.Total, d.guardian.Warnings, d.guardian.Errors)
-	for _, f := range d.guardian.Findings {
-		fmt.Printf("    [%s] %s: %s\n", f.RuleID, f.Target, truncate(f.Message, 60))
+	if d.guardian.Total > 0 {
+		fmt.Printf("  ○ guardian            %d finding(s) — %d warnings %d errors\n",
+			d.guardian.Total, d.guardian.Warnings, d.guardian.Errors)
+		for _, f := range d.guardian.Findings {
+			fmt.Printf("    [%s] %s: %s\n", f.RuleID, f.Target, truncate(f.Message, 60))
+		}
 	}
 }
 
@@ -394,7 +418,12 @@ func buildSuggestions(d *doctorReport) []string {
 				"service crashes detected — check: engx logs %s-daemon", f.Target))
 		case "G-005":
 			out = append(out, fmt.Sprintf("add nexus.yaml to project: %s", f.Target))
+		case "G-019":
+			out = append(out, "Arbiter gate was bypassed — review: engx events | grep skip-enforce")
 		}
+	}
+	if d.guardian.IsStale {
+		out = append(out, "restart guardian to refresh findings: engx run guardian")
 	}
 	return out
 }

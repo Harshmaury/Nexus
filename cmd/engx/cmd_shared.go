@@ -251,3 +251,15 @@ func projectServiceStates(httpAddr, projectID string) (int, int, error) {
 	}
 	return running, total, nil
 }
+
+// formatUptimeSeconds formats a duration in seconds as a human-readable string.
+// Used by engx doctor for staleness display.
+func formatUptimeSeconds(seconds float64) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%.0fs", seconds)
+	}
+	if seconds < 3600 {
+		return fmt.Sprintf("%.0fm", seconds/60)
+	}
+	return fmt.Sprintf("%.1fh", seconds/3600)
+}
