@@ -29,6 +29,12 @@ If you've ever had to ask "which service is down?" or "did that restart actually
 curl -fsSL https://get.engx.dev/install.sh | bash
 ```
 
+Or directly from GitHub (no custom domain required):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Harshmaury/Nexus/main/docs/install.sh | bash
+```
+
 Or via Homebrew:
 
 ```bash

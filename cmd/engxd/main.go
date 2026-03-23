@@ -176,7 +176,7 @@ func run(logger *log.Logger) error {
 		HasServiceToken: len(serviceTokens) > 0,
 		HasSSEBroker:    true,
 	})
-	logger.Printf(modeEval.ModeLogLine())
+	logger.Print(modeEval.ModeLogLine())
 
 	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
 	// ── 8. HTTP API SERVER ───────────────────────────────────────────────────
