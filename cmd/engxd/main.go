@@ -55,7 +55,9 @@ import (
 	processprovider "github.com/Harshmaury/Nexus/pkg/runtime/process"
 )
 
-const daemonVersion = "0.1.0"
+// daemonVersion is injected by goreleaser at build time via -ldflags.
+// Falls back to "dev" when built locally without goreleaser.
+var daemonVersion = "dev"
 
 func main() {
 	logger := log.New(os.Stdout, "[engxd] ", log.LstdFlags)

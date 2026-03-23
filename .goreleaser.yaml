@@ -1,6 +1,6 @@
-# .goreleaser.yaml — Wave 4 release pipeline (ADR-030)
-# Naming contract: engx-<version>-<os>-<arch>.tar.gz  ← DO NOT CHANGE
-# See: architecture/decisions/ADR-030-goreleaser-pipeline.md
+# .goreleaser.yaml — engx release pipeline (ADR-030)
+# Produces: engx-<version>-<os>-<arch>.tar.gz + checksums
+# Triggered by: git tag v* push → .github/workflows/release.yml
 version: 2
 
 project_name: engx
@@ -9,46 +9,46 @@ before:
   hooks:
     - go mod tidy
 
-# ── LINUX + WINDOWS BUILDS ────────────────────────────────────────────────────
 builds:
-  # engxd — CGO on (sqlite3), linux only
-  - id: engxd-linux
+  # engxd — requires CGO (SQLite). Linux + macOS only.
+  - id: engxd
     binary: bin/engxd
-    main: ./cmd/engxd/
+    main: ./cmd/engxd
     env:
       - CGO_ENABLED=1
-    goos: [linux]
+    goos: [linux, darwin]
     goarch: [amd64, arm64]
-    overrides:
-      - goos: linux
+    ignore:
+      - goos: darwin
         goarch: arm64
-        env:
-          - CGO_ENABLED=1
-          - CC=aarch64-linux-gnu-gcc
     ldflags:
-      - -s -w -X main.daemonVersion={{.Version}}
+      - -s -w
+      - -X main.daemonVersion={{.Version}}
+    hooks:
+      post: []
 
-  # engx — CGO off, linux + windows
-  - id: engx-linux-windows
+  # engx CLI — pure Go. Linux + macOS + Windows.
+  - id: engx
     binary: bin/engx
-    main: ./cmd/engx/
+    main: ./cmd/engx
     env:
       - CGO_ENABLED=0
-    goos: [linux, windows]
+    goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ignore:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X main.cliVersion={{.Version}}
+      - -s -w
+      - -X main.cliVersion={{.Version}}
 
-  # engxa — CGO off, linux + windows
-  - id: engxa-linux-windows
+  # engxa agent — pure Go. Linux + macOS + Windows.
+  - id: engxa
     binary: bin/engxa
-    main: ./cmd/engxa/
+    main: ./cmd/engxa
     env:
       - CGO_ENABLED=0
-    goos: [linux, windows]
+    goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ignore:
       - goos: windows
@@ -56,28 +56,37 @@ builds:
     ldflags:
       - -s -w
 
-# ── ARCHIVES ──────────────────────────────────────────────────────────────────
 archives:
-  - id: default
-    ids: [engxd-linux, engx-linux-windows, engxa-linux-windows]
-    # Naming contract — matched by internal/upgrade/release.go and scripts/install.sh
+  - id: platform
     name_template: "engx-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
-    wrap_in_directory: false
-    allow_different_binary_count: true
-    formats: [tar.gz]
+    format: tar.gz
     format_overrides:
       - goos: windows
-        formats: [zip]
+        format: zip
+    wrap_in_directory: false
     files:
       - LICENSE
       - README.md
 
-# ── CHECKSUMS ─────────────────────────────────────────────────────────────────
 checksum:
   name_template: "engx-{{ .Version }}-checksums.txt"
   algorithm: sha256
 
-# ── CHANGELOG ─────────────────────────────────────────────────────────────────
+release:
+  github:
+    owner: Harshmaury
+    name: Nexus
+  draft: false
+  prerelease: auto
+  name_template: "engx v{{ .Version }}"
+  header: |
+    ## engx {{ .Version }}
+
+    ```bash
+    curl -fsSL https://get.engx.dev/install.sh | bash
+    engx upgrade
+    ```
+
 changelog:
   sort: asc
   filters:
@@ -87,11 +96,3 @@ changelog:
       - "^chore:"
       - Merge pull request
       - Merge branch
-
-# ── RELEASE ───────────────────────────────────────────────────────────────────
-release:
-  github:
-    owner: Harshmaury
-    name: Nexus
-  prerelease: auto   # tags with -rc/-beta/-alpha → pre-release
-  draft: false

@@ -1,8 +1,3 @@
-# .github/workflows/release.yml — Wave 4 release pipeline (ADR-030)
-# Triggers on every v* tag push.
-# Two parallel jobs: linux (goreleaser) + darwin (native macOS runner).
-# Darwin checksums are merged into the single engx-<version>-checksums.txt.
-
 name: Release
 
 on:
@@ -14,142 +9,29 @@ permissions:
   contents: write
 
 jobs:
-  # ── LINUX + WINDOWS ─────────────────────────────────────────────────────────
-  release-linux:
-    name: Release (Linux + Windows)
+  release:
+    name: goreleaser
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Install gcc (for CGO / sqlite3)
-        run: sudo apt-get install -y gcc gcc-aarch64-linux-gnu
+      - name: Install CGO dependencies
+        run: sudo apt-get install -y gcc libc6-dev
 
-      - name: Run goreleaser
-        uses: goreleaser/goreleaser-action@v7
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
+          distribution: goreleaser
           version: latest
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CC_linux_arm64: aarch64-linux-gnu-gcc
-
-      - name: Upload linux checksums artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-checksums
-          path: dist/engx-*-checksums.txt
-
-  # ── DARWIN ──────────────────────────────────────────────────────────────────
-  release-darwin:
-    name: Release (macOS)
-    runs-on: macos-latest
-    needs: release-linux
-    env:
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Build darwin binaries
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          mkdir -p dist/darwin
-
-          # engxd — CGO on for sqlite3
-          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
-            go build -ldflags "-s -w -X main.daemonVersion=${VERSION}" \
-            -o dist/darwin/bin/engxd ./cmd/engxd/
-
-          # engx — CGO off
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
-            go build -ldflags "-s -w -X main.cliVersion=${VERSION}" \
-            -o dist/darwin/bin/engx ./cmd/engx/
-
-          # engxa — CGO off
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
-            go build -ldflags "-s -w" \
-            -o dist/darwin/bin/engxa ./cmd/engxa/
-
-          # arm64
-          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-            go build -ldflags "-s -w -X main.daemonVersion=${VERSION}" \
-            -o dist/darwin-arm64/bin/engxd ./cmd/engxd/
-
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-            go build -ldflags "-s -w -X main.cliVersion=${VERSION}" \
-            -o dist/darwin-arm64/bin/engx ./cmd/engx/
-
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-            go build -ldflags "-s -w" \
-            -o dist/darwin-arm64/bin/engxa ./cmd/engxa/
-
-      - name: Package and checksum darwin tarballs
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          cd dist
-
-          # amd64
-          tar -czf engx-${VERSION}-darwin-amd64.tar.gz \
-            -C darwin bin/engxd bin/engx bin/engxa \
-            -C "${GITHUB_WORKSPACE}" LICENSE README.md
-
-          # arm64
-          tar -czf engx-${VERSION}-darwin-arm64.tar.gz \
-            -C darwin-arm64 bin/engxd bin/engx bin/engxa \
-            -C "${GITHUB_WORKSPACE}" LICENSE README.md
-
-          shasum -a 256 engx-${VERSION}-darwin-*.tar.gz > darwin-checksums.txt
-          cat darwin-checksums.txt
-
-      - name: Download linux checksums
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-checksums
-          path: dist/
-
-      - name: Merge checksums and upload release assets
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CC_linux_arm64: aarch64-linux-gnu-gcc
-        run: |
-          cd dist
-          # Merge linux + darwin checksums into the single canonical file
-          cat engx-${VERSION}-checksums.txt darwin-checksums.txt \
-            > engx-${VERSION}-checksums-merged.txt
-
-          # Upload darwin tarballs to the existing release
-          gh release upload "v${VERSION}" \
-            engx-${VERSION}-darwin-amd64.tar.gz \
-            engx-${VERSION}-darwin-arm64.tar.gz \
-            --clobber
-
-          # Copy merged file to canonical name then overwrite.
-          # gh release upload --clobber matches by filename, not alias,
-          # so the file#alias syntax does not replace the goreleaser asset.
-          cp engx-${VERSION}-checksums-merged.txt engx-${VERSION}-checksums.txt
-          gh release upload "v${VERSION}" \
-            engx-${VERSION}-checksums.txt \
-            --clobber
