@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# engx installer — zero to running (ADR-031)
+# engx installer — zero to running
 # Usage:
 #   curl -fsSL https://get.engx.dev/install.sh | bash
 #   curl -fsSL https://get.engx.dev/install.sh | ENGX_CHANNEL=beta bash
@@ -14,23 +14,20 @@ CHANNEL="${ENGX_CHANNEL:-stable}"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 
-# Detect Windows native environment (not WSL) and exit clearly.
+# Windows native — not supported, redirect to WSL2
 if [[ "$OS" == "windows"* ]] || [[ "$OS" == "mingw"* ]] || [[ "$OS" == "msys"* ]]; then
   echo ""
   echo "  engx does not support Windows natively."
   echo ""
   echo "  Supported path: Windows Subsystem for Linux (WSL2)"
-  echo ""
-  echo "  Setup:"
   echo "    1. Install WSL2:  https://learn.microsoft.com/windows/wsl/install"
   echo "    2. Open a WSL terminal (Ubuntu recommended)"
-  echo "    3. Run this installer again inside WSL:"
-  echo "       curl -fsSL https://get.engx.dev/install.sh | bash"
+  echo "    3. Run this installer again inside WSL"
   echo ""
   exit 1
 fi
 
-# Detect WSL2 (uname returns Linux, but /proc/version contains Microsoft).
+# WSL2 detection
 IS_WSL=false
 if [[ -f /proc/version ]] && grep -qi "microsoft" /proc/version 2>/dev/null; then
   IS_WSL=true
@@ -50,8 +47,7 @@ if [[ "$OS" != "linux" && "$OS" != "darwin" ]]; then
   exit 1
 fi
 
-# engxd (CGO) is not available for darwin/arm64 in the standard release.
-# Apple Silicon users install the amd64 build which runs via Rosetta 2.
+# Apple Silicon: use amd64 via Rosetta 2
 if [[ "$OS" == "darwin" && "$ARCH" == "arm64" ]]; then
   ARCH="amd64"
 fi
@@ -64,7 +60,7 @@ die()     { echo "error: $*" >&2; exit 1; }
 
 require() {
   for cmd in "$@"; do
-    command -v "$cmd" &>/dev/null || die "required command not found: $cmd (install it and retry)"
+    command -v "$cmd" &>/dev/null || die "required: $cmd (install it and retry)"
   done
 }
 
@@ -76,10 +72,10 @@ checksum_verify() {
   elif command -v shasum &>/dev/null; then
     actual="$(shasum -a 256 "$file" | awk '{print $1}')"
   else
-    die "no sha256sum or shasum found — cannot verify checksum"
+    die "no sha256sum or shasum found"
   fi
   [[ "$actual" == "$expected" ]] || \
-    die "checksum mismatch for $(basename "$file")"$'\n'"  expected: $expected"$'\n'"  actual:   $actual"
+    die "checksum mismatch for $(basename "$file")"
 }
 
 # ── TEMP DIR ──────────────────────────────────────────────────────────────────
@@ -89,11 +85,11 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # ── STEP 1: resolve version ───────────────────────────────────────────────────
 echo
 if [[ "$IS_WSL" == "true" ]]; then
-  echo "  engx installer — WSL2 detected — platform: ${OS}/${ARCH}  channel: ${CHANNEL}"
+  echo "  engx installer — WSL2 — ${OS}/${ARCH}  channel: ${CHANNEL}"
 else
-  echo "  engx installer — platform: ${OS}/${ARCH}  channel: ${CHANNEL}"
+  echo "  engx installer — ${OS}/${ARCH}  channel: ${CHANNEL}"
 fi
-echo "  ────────────────────────────────────────────────"
+echo "  ────────────────────────────────────────"
 
 require curl
 
@@ -107,7 +103,7 @@ else
     | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/')"
 fi
 
-[[ -n "$VERSION" ]] || die "could not resolve latest release version — check your network"
+[[ -n "$VERSION" ]] || die "could not resolve latest release version"
 success "found v${VERSION}"
 
 # ── STEP 2: download ──────────────────────────────────────────────────────────
@@ -119,11 +115,11 @@ info "downloading ${TARBALL}..."
 curl -fsSL --progress-bar -o "${TMPDIR}/${TARBALL}" "$TARBALL_URL"
 success "downloaded"
 
-# ── STEP 3: verify checksum ───────────────────────────────────────────────────
+# ── STEP 3: verify ────────────────────────────────────────────────────────────
 info "verifying SHA256..."
 curl -fsSL -o "${TMPDIR}/checksums.txt" "$CHECKSUMS_URL"
 EXPECTED="$(grep "${TARBALL}" "${TMPDIR}/checksums.txt" | awk '{print $1}')"
-[[ -n "$EXPECTED" ]] || die "tarball not found in checksums: ${TARBALL}"
+[[ -n "$EXPECTED" ]] || die "tarball not found in checksums"
 checksum_verify "${TMPDIR}/${TARBALL}" "$EXPECTED"
 success "checksum verified"
 
@@ -131,9 +127,8 @@ success "checksum verified"
 info "extracting..."
 mkdir -p "${TMPDIR}/extract"
 tar -xzf "${TMPDIR}/${TARBALL}" -C "${TMPDIR}/extract"
-
 for bin in engxd engx engxa; do
-  [[ -f "${TMPDIR}/extract/bin/${bin}" ]] || die "binary missing from release: bin/${bin}"
+  [[ -f "${TMPDIR}/extract/bin/${bin}" ]] || die "binary missing from release: $bin"
 done
 success "extracted engxd, engx, engxa"
 
@@ -154,13 +149,12 @@ add_to_path() {
   { echo ""; echo "# engx — added by installer"; echo "$line"; } >> "$rc"
   success "added ~/bin to PATH in $(basename "$rc")"
 }
-[[ ":$PATH:\" != *\":$INSTALL_DIR:\"* ]] || true
 [[ -f "$HOME/.zshrc" ]]  && add_to_path "$HOME/.zshrc"
 [[ -f "$HOME/.bashrc" ]] && add_to_path "$HOME/.bashrc"
 
 # ── STEP 7: register engxd as system service ──────────────────────────────────
 info "registering engxd as system service..."
-if "${INSTALL_DIR}/engx" platform install &>/dev/null 2>&1; then
+if "${INSTALL_DIR}/engx" platform install 2>/dev/null; then
   success "engxd registered as system service (starts at login)"
 else
   warn "platform install skipped — run manually: engx platform install"
@@ -168,22 +162,22 @@ fi
 
 # ── STEP 8: summary ───────────────────────────────────────────────────────────
 echo
-  echo "  ✓ engx v${VERSION} installed"
+echo "  ✓ engx v${VERSION} installed"
+echo
+echo "  Get started:"
+echo "    source ~/.bashrc           # reload PATH (or open a new terminal)"
+echo "    engx platform install      # download and install platform services"
+echo "    cd <your-project>"
+echo "    engx init                  # detect project and write nexus.yaml"
+echo "    engx run <your-project>    # start it"
+echo "    engx ps                    # see what is running"
+echo
+echo "  Tip: use Homebrew for easier upgrades:"
+echo "    brew install harshmaury/engx/engx"
+echo
+if [[ "$IS_WSL" == "true" ]]; then
+  echo "  WSL2: use your Linux terminal for all engx commands."
   echo
-  echo "  Get started:"
-  echo "    source ~/.bashrc         # reload PATH (or open a new terminal)"
-  echo "    cd <your-project>"
-  echo "    engx platform install    # install platform services"
-  echo "    engx init                # detect project and write nexus.yaml"
-  echo "    engx run <your-project>  # start it"
-  echo "    engx ps                  # see what is running"
-  echo
-  echo "  Tip: next time use Homebrew for easier upgrades:"
-  echo "    brew install harshmaury/engx/engx"
-  echo
-  if [[ "$IS_WSL" == "true" ]]; then
-    echo "  WSL2: use your Linux terminal for all engx commands."
-    echo
-  fi
-  echo "  Docs: https://engx.dev"
-  echo
+fi
+echo "  Docs: https://engx.dev"
+echo
