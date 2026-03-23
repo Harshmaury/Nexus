@@ -168,18 +168,22 @@ fi
 
 # ── STEP 8: summary ───────────────────────────────────────────────────────────
 echo
-echo "  ✓ engx v${VERSION} installed"
-echo
-echo "  Get started:"
-echo "    source ~/.bashrc         # reload PATH (or open a new terminal)"
-echo "    cd <your-project>"
-echo "    engx init                # generate nexus.yaml for your project"
-echo "    engx run <your-project>  # start it"
-echo "    engx ps                  # see what's running"
-echo
-if [[ "$IS_WSL" == "true" ]]; then
-  echo "  WSL2 note: engxd runs inside WSL. Use your Linux terminal for all engx commands."
+  echo "  ✓ engx v${VERSION} installed"
   echo
-fi
-echo "  Full docs: https://engx.dev"
-echo
+  echo "  Get started:"
+  echo "    source ~/.bashrc         # reload PATH (or open a new terminal)"
+  echo "    cd <your-project>"
+  echo "    engx platform install    # install platform services"
+  echo "    engx init                # detect project + write nexus.yaml"
+  echo "    engx run <your-project>  # start it"
+  echo "    engx ps                  # see what is running"
+  echo
+  echo "  Tip: next time use Homebrew for easier upgrades:"
+  echo "    brew install harshmaury/engx/engx"
+  echo
+  if [[ "$IS_WSL" == "true" ]]; then
+    echo "  WSL2 note: use your Linux terminal for all engx commands."
+    echo
+  fi
+  echo "  Docs: https://engx.dev"
+  echo

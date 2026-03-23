@@ -1,6 +1,6 @@
 # .goreleaser.yaml — engx release pipeline (ADR-030)
 # Produces: engx-<version>-<os>-<arch>.tar.gz + checksums
-# Triggered by: git tag v* push → .github/workflows/release.yml
+# Triggered by: git tag v* push
 version: 2
 
 project_name: engx
@@ -10,24 +10,20 @@ before:
     - go mod tidy
 
 builds:
-  # engxd — requires CGO (SQLite). Linux + macOS only.
+  # engxd — CGO required (SQLite). x86_64 only for v1.
+  # arm64 requires gcc-aarch64-linux-gnu cross-compiler — added in v1.1.
   - id: engxd
     binary: bin/engxd
     main: ./cmd/engxd
     env:
       - CGO_ENABLED=1
     goos: [linux, darwin]
-    goarch: [amd64, arm64]
-    ignore:
-      - goos: darwin
-        goarch: arm64
+    goarch: [amd64]
     ldflags:
       - -s -w
       - -X main.daemonVersion={{.Version}}
-    hooks:
-      post: []
 
-  # engx CLI — pure Go. Linux + macOS + Windows.
+  # engx CLI — pure Go, all platforms.
   - id: engx
     binary: bin/engx
     main: ./cmd/engx
@@ -42,7 +38,7 @@ builds:
       - -s -w
       - -X main.cliVersion={{.Version}}
 
-  # engxa agent — pure Go. Linux + macOS + Windows.
+  # engxa agent — pure Go, all platforms.
   - id: engxa
     binary: bin/engxa
     main: ./cmd/engxa
@@ -78,13 +74,17 @@ release:
     name: Nexus
   draft: false
   prerelease: auto
-  name_template: "engx v{{ .Version }}"
+  name_template: "engx {{ .Version }}"
   header: |
     ## engx {{ .Version }}
 
+    **Install:**
+    ```bash
+    brew install harshmaury/engx/engx
+    ```
+    Or:
     ```bash
     curl -fsSL https://get.engx.dev/install.sh | bash
-    engx upgrade
     ```
 
 changelog:
