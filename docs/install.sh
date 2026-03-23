@@ -174,7 +174,7 @@ echo
   echo "    source ~/.bashrc         # reload PATH (or open a new terminal)"
   echo "    cd <your-project>"
   echo "    engx platform install    # install platform services"
-  echo "    engx init                # detect project + write nexus.yaml"
+  echo "    engx init                # detect project and write nexus.yaml"
   echo "    engx run <your-project>  # start it"
   echo "    engx ps                  # see what is running"
   echo
@@ -182,7 +182,7 @@ echo
   echo "    brew install harshmaury/engx/engx"
   echo
   if [[ "$IS_WSL" == "true" ]]; then
-    echo "  WSL2 note: use your Linux terminal for all engx commands."
+    echo "  WSL2: use your Linux terminal for all engx commands."
     echo
   fi
   echo "  Docs: https://engx.dev"
