@@ -49,11 +49,27 @@ you log in. After running this command you no longer need to run 'engxd &'.
 
 To remove the service: engx platform uninstall`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Step 1: Register engxd as a system service.
 			bin, err := resolveEngxdBin(binPath)
 			if err != nil {
 				return err
 			}
-			return installService(bin)
+			if err := installService(bin); err != nil {
+				return err
+			}
+
+			// Step 2: Download platform service binaries to ~/bin/.
+			installDir, err := resolveInstallDir()
+			if err != nil {
+				return fmt.Errorf("resolve install dir: %w", err)
+			}
+			fmt.Println()
+			fmt.Println("Downloading platform service binaries...")
+			if err := downloadPlatformServices(installDir); err != nil {
+				fmt.Printf("  ! Service download incomplete: %v\n", err)
+				fmt.Println("  Run: engx platform install  (to retry)")
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&binPath, "bin", "",
@@ -346,3 +362,14 @@ func printManualInstructions(binPath string) {
 	fmt.Printf("  %s &\n\n", binPath)
 	fmt.Println("Add this line to your shell profile (~/.bashrc, ~/.zshrc) to start at login.")
 }
+
+// resolveInstallDir returns the directory where engx binaries are installed.
+// Matches the install.sh INSTALL_DIR default: ~/bin
+func resolveInstallDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "bin"), nil
+}
+
