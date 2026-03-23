@@ -19,6 +19,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// platformServiceRecord is the API shape for one service in GET /services.
+// Field names match the Nexus handler output exactly (mirrors accord.ServiceDTO).
+// Using a named type prevents the anonymous-struct drift defect (DEF-013).
+type platformServiceRecord struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	DesiredState string `json:"desired_state"`
+	ActualState  string `json:"actual_state"`
+	FailCount    int    `json:"fail_count"`
+}
+
+// platformServicesResponse is the Accord envelope for GET /services.
+type platformServicesResponse struct {
+	OK   bool                    `json:"ok"`
+	Data []platformServiceRecord `json:"data"`
+}
+
+
 // platformProjects is the ordered start sequence.
 // Nexus is excluded — must already be running before engx can connect.
 var platformProjects = []string{
@@ -89,17 +107,9 @@ func platformStatusCmd(socketPath, httpAddr *string) *cobra.Command {
 				return fmt.Errorf("cannot reach engxd at %s: %w", *httpAddr, err)
 			}
 			defer resp.Body.Close()
-			var result struct {
-				Data []struct {
-					ID           string `json:"id"`
-					Name         string `json:"name"`
-					DesiredState string `json:"desired_state"`
-					ActualState  string `json:"actual_state"`
-					FailCount    int    `json:"fail_count"`
-				} `json:"data"`
-			}
+			var result platformServicesResponse
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-				return fmt.Errorf("decode: %w", err)
+				return fmt.Errorf("decode platform services: %w", err)
 			}
 			total, running := 0, 0
 			for _, svc := range result.Data {
@@ -152,9 +162,10 @@ func stepCheckRegistration(socketPath, httpAddr string, autoRegister bool) plan.
 		}
 		if !autoRegister {
 			return plan.StepResult{OK: false, Err: &plan.UserError{
-				What: fmt.Sprintf("%d project(s) not registered", len(missing)),
-				Why:  fmt.Sprintf("missing: %v", missing),
-				NextStep: "engx platform start --register",
+				What:     "engx platform services are not installed",
+				Where:    "platform registry",
+				Why:      "The platform services (insights, observability, execution) have not been downloaded and registered on this machine.",
+				NextStep: "engx platform install   (downloads and registers all platform services)",
 			}}
 		}
 		autoRegisterPlatform(socketPath, httpAddr, missing)
