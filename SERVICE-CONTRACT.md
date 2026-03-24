@@ -1,92 +1,88 @@
+// @nexus-project: nexus
+// @nexus-path: SERVICE-CONTRACT.md
 # SERVICE-CONTRACT.md — Nexus
+# @version: 1.7.3
+# @updated: 2026-03-25
 
-**Service:** nexus
-**Domain:** Control
-**Port:** 8080
-**ADRs:** ADR-001 (registry), ADR-002 (observation), ADR-003 (protocol),
-         ADR-005 (lifecycle), ADR-008 (auth), ADR-015 (SSE)
-**Version:** 1.2.0-phase16
-**Updated:** 2026-03-18
+**Port:** 8080 · **DB:** `~/.nexus/nexus.db` · **Domain:** Control
 
 ---
 
-## Role
+## Code
 
-Central control plane. Owns the canonical project registry, filesystem
-observation, service runtime state, and the platform event bus. The most
-authoritative service in the platform — all other services depend on it
-directly or indirectly.
-
----
-
-## Inputs
-
-- Developer CLI commands via `engx` client
-- Remote agent connections via `engxa`
-- `POST /projects` — project registration
-- `POST /projects/:id/start|stop` — lifecycle instructions (from Forge only)
-- Filesystem events via `fsnotify` watcher (internal — no HTTP)
-- Drop folder file events (internal — `internal/intelligence/` pipeline)
+```
+cmd/engxd/main.go              startup, goroutine lifecycle, signal handling
+cmd/engx/                      CLI subcommands (one file per command group)
+cmd/engxa/main.go              remote agent heartbeat + sync loop
+internal/daemon/reconciler.go  5s reconcile tick — desired→actual state
+internal/controllers/          ProjectController, HealthController, RecoveryController
+internal/state/db.go           Storer interface, SQLite, versioned migrations
+internal/eventbus/bus.go       in-process pub/sub, all topic constants
+internal/api/                  HTTP :8080, response envelope {ok, data, error}
+internal/watcher/              fsnotify — WatchModeDropFolder + WatchModeWorkspace
+pkg/runtime/                   process / docker / k8s providers
+```
 
 ---
 
-## Outputs
+## Contract
 
-- `GET /health` — health check (no auth)
-- `GET /projects` — project registry
-- `GET /events?since=<id>` — structured event log (auth required)
-- `GET /events/stream` — SSE fan-out stream (auth required, ADR-015)
-- `GET /metrics` — runtime telemetry counters (JSON, no Prometheus dependency)
-- `POST /projects/:id/start|stop` — lifecycle control (Forge only)
+### Endpoints
 
----
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/health` | none | `{"ok":true,"status":"healthy","service":"nexus"}` |
+| GET | `/projects` | token | All registered projects |
+| POST | `/projects/register` | token | Register project — `ProjectRegisterRequest` |
+| POST | `/projects/:id/start` | token | Queue service starts (Forge only) |
+| POST | `/projects/:id/stop` | token | Queue service stops (Forge only) |
+| GET | `/services` | token | All managed services |
+| POST | `/services/register` | token | Register service — `ServiceRegisterRequest` |
+| GET | `/agents` | token | Registered remote agents |
+| GET | `/events` | token | `?since=<id>&limit=<n>` — cursor-based event log |
+| GET | `/events/stream` | token | SSE fan-out stream |
+| GET | `/metrics` | token | Runtime counters — `NexusMetricsDTO` |
+| GET | `/system/graph` | token | Unified service topology |
+| POST | `/system/validate` | token | Pre-execution policy gate |
 
-## Dependencies
+All responses: `accord.Response[T]` — `{"ok": bool, "data": T, "error": "string"}`.
 
-None. Nexus has no upstream platform service dependencies.
-It depends only on the local filesystem and SQLite.
+### Event schema
 
----
+`EventDTO` fields: `id`, `service_id`, `type`, `source`, `trace_id`, `span_id`, `parent_span_id`, `level`, `component`, `outcome`, `payload`, `actor`, `created_at`.
 
-## Guarantees
+Payload type registry: `Accord/api/payload.go → EventPayloadType`.
 
-- Project registry is the single canonical source of truth for all projects.
-  No other service maintains its own project list (ADR-001).
-- Filesystem observation is owned exclusively by Nexus.
-  No other service watches the filesystem (ADR-002).
-- All inter-service calls carry `X-Service-Token`. `/health` exempt (ADR-008).
-- Event log is append-only and queryable by `since=<id>` cursor.
-- SSE broker evicts slow clients after 5s send timeout — does not block the event bus.
-- `X-Trace-ID` is injected on every response by middleware.
-- All migrations are in a single ordered slice in `internal/state/db.go`.
+### Versioning
 
----
+`X-Nexus-API-Version: 1` on all responses. Breaking changes require ADR + major bump.
 
-## Non-Responsibilities
+### Failure conditions
 
-- Nexus does not execute developer workflows — that is Forge's domain.
-- Nexus does not index workspace source files — that is Atlas's domain.
-- Nexus does not evaluate policy — that is Guardian's domain.
-- Nexus does not call any observer service (Metrics, Navigator, Guardian,
-  Observer, Sentinel). Data flows out of Nexus, never back in from observers.
-- Nexus does not make AI calls of any kind.
-
----
-
-## Data Authority
-
-**Primary authority for:**
-- Project registry — `~/.nexus/nexus.db` → `projects` table
-- Service runtime state — desired and actual state per project
-- Platform event log — `events` table, append-only
-- Filesystem workspace events — published to all subscribers
+| Code | Condition |
+|------|-----------|
+| 401 | Missing or invalid `X-Service-Token` |
+| 404 | Project or service not found |
+| 409 | Project or service already registered |
+| 500 | Unexpected internal error |
 
 ---
 
-## Concurrency Model
+## Control
 
-- SQLite store accessed through `state.Storer` interface.
-- `EventWriter` notifies the SSE broker after each store write.
-- SSE broker manages per-client goroutines with slow-client eviction.
-- HTTP server is standard `net/http` with read/write timeouts.
-- Recovery controller handles crash detection and restart logic.
+**Reconciler:** ticks every 5s. Reads `desired_state` per service → instructs runtime provider → writes `actual_state`. Single writer to SQLite.
+
+**Crash policy:** `fail_count ≥ threshold` (from `internal/config/policy.go`) → sets `desired_state = maintenance`. Recovery controller polls maintenance projects every 30s.
+
+**Event log:** append-only. `GET /events?since=<id>` is a stable cursor — never resets. SSE broker evicts slow clients after 5s send timeout.
+
+**Token enforcement:** `X-Service-Token` validated in `internal/api/middleware/service_auth.go`. `ENGX_AUTH_REQUIRED=true` → missing token = `FATAL` at startup.
+
+---
+
+## Context
+
+- Sole project registry and filesystem observer on the platform. No other service writes project state.
+- All other services discover Nexus at `Canon/identity.DefaultNexusAddr` or env override.
+- Atlas, Forge, and all observers subscribe by polling `GET /events?since=<id>`.
+- Nexus has no upstream platform dependencies. It depends only on local filesystem and SQLite.
