@@ -27,6 +27,21 @@ const (
 	labelWidth  = 16
 )
 
+// SpanPayload is the structured payload for PLAN_STEP events.
+// Mirrors accord.PlanSpanDTO exactly — kept local to avoid adding Accord
+// as a direct Nexus dependency until the module graph is consolidated.
+// If Accord is added to go.mod, replace this with accord.PlanSpanDTO.
+type SpanPayload struct {
+	PlanID     string `json:"plan_id"`
+	PlanName   string `json:"plan_name"`
+	StepIndex  int    `json:"step_index"`
+	StepLabel  string `json:"step_label"`
+	StepKind   string `json:"step_kind"`
+	DurationMS int64  `json:"duration_ms"`
+	Outcome    string `json:"outcome"`          // "success" | "failure" | "skipped"
+	Detail     string `json:"detail,omitempty"`
+}
+
 // RunConfig holds executor dependencies.
 type RunConfig struct {
 	// NexusAddr is the Nexus HTTP address for span emission.
@@ -47,9 +62,11 @@ func Run(ctx context.Context, p *Plan, w io.Writer, cfg RunConfig) error {
 	fmt.Fprintf(w, "\n  Plan: %s\n\n", p.Name)
 
 	for i, step := range p.Steps {
+		stepStart := time.Now()
 		result := runStep(planCtx, step)
+		durationMS := time.Since(stepStart).Milliseconds()
 		printStepLine(w, step.Label, result)
-		emitSpan(cfg, p, i, step, result)
+		emitSpan(cfg, p, i, step, result, durationMS)
 
 		if result.Skip {
 			continue
@@ -65,9 +82,14 @@ func Run(ctx context.Context, p *Plan, w io.Writer, cfg RunConfig) error {
 		}
 	}
 
+	// GAP-4: use plan's SuccessStatus if set, default to "RUNNING".
+	status := p.SuccessStatus
+	if status == "" {
+		status = "RUNNING"
+	}
 	elapsed := time.Since(start)
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  Status:   %s%s%s\n", colorGreen, "RUNNING", colorReset)
+	fmt.Fprintf(w, "  Status:   %s%s%s\n", colorGreen, status, colorReset)
 	fmt.Fprintf(w, "  Elapsed:  %.1fs\n\n", elapsed.Seconds())
 	return nil
 }
@@ -151,8 +173,9 @@ func printOutcomeBlock(w io.Writer, err *UserError) {
 }
 
 // emitSpan fires a PLAN_STEP event to Nexus for developer observability.
+// Uses SpanPayload (mirrors accord.PlanSpanDTO) — schema-safe, includes duration_ms.
 // Fails silently — never blocks user operations.
-func emitSpan(cfg RunConfig, p *Plan, idx int, step *Step, r StepResult) {
+func emitSpan(cfg RunConfig, p *Plan, idx int, step *Step, r StepResult, durationMS int64) {
 	if cfg.NexusAddr == "" {
 		return
 	}
@@ -162,15 +185,17 @@ func emitSpan(cfg RunConfig, p *Plan, idx int, step *Step, r StepResult) {
 	} else if !r.OK {
 		outcome = "failure"
 	}
-	payload, err := json.Marshal(map[string]any{
-		"plan_id":    p.ID,
-		"plan_name":  p.Name,
-		"step_index": idx,
-		"step_label": step.Label,
-		"step_kind":  step.Kind.String(),
-		"outcome":    outcome,
-		"detail":     r.Detail,
-	})
+	span := SpanPayload{
+		PlanID:     p.ID,
+		PlanName:   p.Name,
+		StepIndex:  idx,
+		StepLabel:  step.Label,
+		StepKind:   step.Kind.String(),
+		DurationMS: durationMS,
+		Outcome:    outcome,
+		Detail:     r.Detail,
+	}
+	payload, err := json.Marshal(span)
 	if err != nil {
 		return
 	}

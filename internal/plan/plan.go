@@ -18,9 +18,10 @@ import (
 // Plan is a named, ordered sequence of steps.
 // Constructed before execution — immutable during execution.
 type Plan struct {
-	ID    string  // root trace ID — propagated to all steps as X-Trace-ID
-	Name  string  // human label, e.g. "run:atlas"
-	Steps []*Step
+	ID            string  // root trace ID — propagated to all steps as X-Trace-ID
+	Name          string  // human label, e.g. "run:atlas"
+	Steps         []*Step
+	SuccessStatus string  // terminal status line on success — defaults to "RUNNING" when empty
 }
 
 // Step is one unit of work in a plan.
