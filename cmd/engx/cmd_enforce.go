@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,15 +69,46 @@ func stepEnforce(httpAddr, projectID string, skipEnforce bool) plan.StepFunc {
 }
 
 // resolveProjectDir returns the local path for a registered project.
-// Checks the conventional workspace path: ~/workspace/projects/engx/services/<id>
+// Priority order (ADR-032 §4):
+//  1. ~/.nexus/platform-paths.json keyed by project ID
+//  2. Conventional path: ~/workspace/projects/engx/services/<id>
 func resolveProjectDir(projectID string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
+	// 1. Consult platform-paths.json written by engx platform install (ADR-032 §4).
+	if dir := loadPlatformPath(home, projectID); dir != "" {
+		return dir
+	}
+	// 2. Fall back to the conventional workspace layout.
 	candidate := filepath.Join(home, "workspace", "projects", "engx", "services", projectID)
 	if _, err := os.Stat(filepath.Join(candidate, ".nexus.yaml")); err == nil {
 		return candidate
 	}
 	return ""
 }
+
+// loadPlatformPath reads ~/.nexus/platform-paths.json and returns the path
+// for projectID, or "" if the file is absent or the key is not present.
+// The file is written by `engx platform install` (ADR-032 §4).
+func loadPlatformPath(home, projectID string) string {
+	pathsFile := filepath.Join(home, ".nexus", "platform-paths.json")
+	data, err := os.ReadFile(pathsFile)
+	if err != nil {
+		return "" // file absent — not an error, fall through to default path
+	}
+	var paths map[string]string
+	if err := json.Unmarshal(data, &paths); err != nil {
+		return "" // malformed file — fall through, do not crash
+	}
+	dir := paths[projectID]
+	if dir == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".nexus.yaml")); err != nil {
+		return "" // path recorded but project not present at that location
+	}
+	return dir
+}
+

@@ -74,21 +74,21 @@ func (w *EventWriter) WithBroker(b SSEPublisher) *EventWriter {
 
 // ServiceStarted records that a service was started.
 func (w *EventWriter) ServiceStarted(serviceID string, traceID string) error {
-	return w.write(serviceID, EventServiceStarted, traceID, OutcomeSuccess, map[string]string{
+	return w.write(serviceID, EventServiceStarted, traceID, "", "info", OutcomeSuccess, map[string]string{
 		"service_id": serviceID,
 	})
 }
 
 // ServiceStopped records that a service was stopped.
 func (w *EventWriter) ServiceStopped(serviceID string, traceID string) error {
-	return w.write(serviceID, EventServiceStopped, traceID, OutcomeSuccess, map[string]string{
+	return w.write(serviceID, EventServiceStopped, traceID, "", "info", OutcomeSuccess, map[string]string{
 		"service_id": serviceID,
 	})
 }
 
 // ServiceCrashed records that a service crashed with an exit code and message.
 func (w *EventWriter) ServiceCrashed(serviceID string, traceID string, exitCode int, message string) error {
-	return w.write(serviceID, EventServiceCrashed, traceID, OutcomeFailure, map[string]any{
+	return w.write(serviceID, EventServiceCrashed, traceID, "", "error", OutcomeFailure, map[string]any{
 		"service_id": serviceID,
 		"exit_code":  exitCode,
 		"message":    message,
@@ -97,14 +97,14 @@ func (w *EventWriter) ServiceCrashed(serviceID string, traceID string, exitCode 
 
 // ServiceHealed records that a service recovered after a crash.
 func (w *EventWriter) ServiceHealed(serviceID string, traceID string) error {
-	return w.write(serviceID, EventServiceHealed, traceID, OutcomeSuccess, map[string]string{
+	return w.write(serviceID, EventServiceHealed, traceID, "", "info", OutcomeSuccess, map[string]string{
 		"service_id": serviceID,
 	})
 }
 
 // StateChanged records a desired or actual state transition.
 func (w *EventWriter) StateChanged(serviceID string, traceID string, from string, to string) error {
-	return w.write(serviceID, EventStateChanged, traceID, OutcomeInfo, map[string]string{
+	return w.write(serviceID, EventStateChanged, traceID, "", "info", OutcomeInfo, map[string]string{
 		"service_id": serviceID,
 		"from":       from,
 		"to":         to,
@@ -113,25 +113,26 @@ func (w *EventWriter) StateChanged(serviceID string, traceID string, from string
 
 // ServiceDeferred records that a service start was deferred (dependency not ready).
 func (w *EventWriter) ServiceDeferred(serviceID string, traceID string, waitingOn string) error {
-	return w.write(serviceID, EventStateChanged, traceID, OutcomeDeferred, map[string]string{
+	return w.write(serviceID, EventStateChanged, traceID, "", "info", OutcomeDeferred, map[string]string{
 		"service_id": serviceID,
 		"waiting_on": waitingOn,
 	})
 }
 
 // SystemAlert records a platform-level alert (not service-specific).
+// severity is used as the event level directly ("info" | "warn" | "error").
 func (w *EventWriter) SystemAlert(severity string, message string, context map[string]string) error {
 	payload := map[string]any{
 		"severity": severity,
 		"message":  message,
 		"context":  context,
 	}
-	return w.write("system", EventSystemAlert, newTraceID("alert"), OutcomeInfo, payload)
+	return w.write("system", EventSystemAlert, newTraceID("alert"), "", severity, OutcomeInfo, payload)
 }
 
 // FileDropped records that Nexus Drop detected a new file.
 func (w *EventWriter) FileDropped(originalPath string, fileName string, sizeBytes int64) error {
-	return w.write("drop", EventFileDropped, newTraceID("drop"), OutcomeInfo, map[string]any{
+	return w.write("drop", EventFileDropped, newTraceID("drop"), "", "info", OutcomeInfo, map[string]any{
 		"original_path": originalPath,
 		"file_name":     fileName,
 		"size_bytes":    sizeBytes,
@@ -141,7 +142,7 @@ func (w *EventWriter) FileDropped(originalPath string, fileName string, sizeByte
 
 // FileRouted records that Nexus Drop successfully routed a file to a project.
 func (w *EventWriter) FileRouted(traceID string, originalName string, renamedTo string, project string, destination string, method string, confidence float64) error {
-	return w.write("drop", EventFileRouted, traceID, OutcomeSuccess, map[string]any{
+	return w.write("drop", EventFileRouted, traceID, "", "info", OutcomeSuccess, map[string]any{
 		"original_name": originalName,
 		"renamed_to":    renamedTo,
 		"project":       project,
@@ -155,12 +156,16 @@ func (w *EventWriter) FileRouted(traceID string, originalName string, renamedTo 
 
 // write serialises the payload to JSON and delegates to the store.
 // Phase 16: also publishes to the SSE broker if one is attached (ADR-015).
-func (w *EventWriter) write(serviceID string, eventType EventType, traceID string, outcome string, payload any) error {
+// ADR-037: level and parentSpanID propagated — no longer hardcoded.
+func (w *EventWriter) write(serviceID string, eventType EventType, traceID, parentSpanID, level, outcome string, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal event payload: %w", err)
 	}
-	if err := w.store.AppendEvent(serviceID, eventType, w.source, traceID, newSpanID(), "", w.component, "info", outcome, string(data), ""); err != nil {
+	if level == "" {
+		level = "info"
+	}
+	if err := w.store.AppendEvent(serviceID, eventType, w.source, traceID, newSpanID(), parentSpanID, w.component, level, outcome, string(data), ""); err != nil {
 		return err
 	}
 	// Notify SSE broker — best effort, never fails the write.

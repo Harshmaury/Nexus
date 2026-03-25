@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/Harshmaury/Arbiter v0.0.0-20260322151248-152c9c516c55
-	github.com/Harshmaury/Canon v0.4.1
+	github.com/Harshmaury/Canon v1.0.0
 	github.com/docker/docker v25.0.6+incompatible
 	github.com/docker/go-connections v0.6.0
 	github.com/fsnotify/fsnotify v1.9.0
